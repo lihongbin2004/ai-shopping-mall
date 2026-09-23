@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.UserCouponMapper">
+
+    <select id="selectById" resultType="UserCoupon">
+        SELECT * FROM user_coupon WHERE id = #{id}
+    </select>
+
+    <select id="selectByUserId" resultType="UserCoupon">
+        SELECT * FROM user_coupon WHERE user_id = #{userId}
+        <if test="status != null">AND status = #{status}</if>
+        ORDER BY id DESC
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO user_coupon(user_id, coupon_id, status)
+        VALUES(#{userId}, #{couponId}, #{status})
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE user_coupon SET status = #{status}, used_time = #{usedTime} WHERE id = #{id}
+    </update>
+
+    <select id="countByUserIdAndCouponId" resultType="int">
+        SELECT COUNT(*) FROM user_coupon WHERE user_id = #{userId} AND coupon_id = #{couponId}
+    </select>
+
+</mapper>

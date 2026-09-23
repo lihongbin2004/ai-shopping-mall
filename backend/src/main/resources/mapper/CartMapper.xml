@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.CartMapper">
+
+    <select id="selectById" resultType="Cart">
+        SELECT * FROM cart WHERE id = #{id}
+    </select>
+
+    <select id="selectByUserIdAndProductId" resultType="Cart">
+        SELECT * FROM cart WHERE user_id = #{userId} AND product_id = #{productId}
+    </select>
+
+    <select id="selectByUserIdAndProductIdAndSkuId" resultType="Cart">
+        SELECT * FROM cart WHERE user_id = #{userId} AND product_id = #{productId} AND (sku_id = #{skuId} OR (sku_id IS NULL AND #{skuId} IS NULL))
+    </select>
+
+    <select id="selectByUserId" resultType="Cart">
+        SELECT c.*, p.status AS productStatus, p.name AS productName, p.price AS productPrice, p.image AS productImage
+        FROM cart c
+        LEFT JOIN product p ON c.product_id = p.id
+        WHERE c.user_id = #{userId}
+        ORDER BY c.create_time DESC
+    </select>
+
+    <select id="countByUserId" resultType="int">
+        SELECT IFNULL(SUM(quantity), 0) FROM cart WHERE user_id = #{userId}
+    </select>
+
+    <select id="selectProductIdsByUserId" resultType="long">
+        SELECT DISTINCT product_id FROM cart WHERE user_id = #{userId}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO cart(user_id, product_id, sku_id, quantity, checked, create_time)
+        VALUES(#{userId}, #{productId}, #{skuId}, #{quantity}, #{checked}, #{createTime})
+    </insert>
+
+    <update id="update">
+        UPDATE cart SET quantity = #{quantity} WHERE id = #{id}
+    </update>
+
+    <update id="updateQuantity">
+        UPDATE cart SET quantity = #{quantity} WHERE id = #{id}
+    </update>
+
+    <update id="updateChecked">
+        UPDATE cart SET checked = #{checked} WHERE id = #{id}
+    </update>
+
+    <update id="updateAllChecked">
+        UPDATE cart SET checked = #{checked} WHERE user_id = #{userId}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM cart WHERE id = #{id}
+    </delete>
+
+    <delete id="deleteByUserId">
+        DELETE FROM cart WHERE user_id = #{userId}
+    </delete>
+
+    <delete id="deleteBatch">
+        DELETE FROM cart WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </delete>
+
+</mapper>

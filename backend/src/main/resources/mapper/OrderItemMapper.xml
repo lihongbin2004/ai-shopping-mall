@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.OrderItemMapper">
+
+    <select id="selectByOrderId" resultType="OrderItem">
+        SELECT * FROM order_item WHERE order_id = #{orderId}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO order_item(order_id, product_id, sku_id, spec_desc, product_name, product_image, quantity, price)
+        VALUES(#{orderId}, #{productId}, #{skuId}, #{specDesc}, #{productName}, #{productImage}, #{quantity}, #{price})
+    </insert>
+
+    <insert id="insertBatch">
+        INSERT INTO order_item(order_id, product_id, sku_id, spec_desc, product_name, product_image, quantity, price) VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.orderId}, #{item.productId}, #{item.skuId}, #{item.specDesc}, #{item.productName}, #{item.productImage}, #{item.quantity}, #{item.price})
+        </foreach>
+    </insert>
+
+    <delete id="deleteByOrderId">
+        DELETE FROM order_item WHERE order_id = #{orderId}
+    </delete>
+
+    <select id="selectBoughtProductIdsByUserId" resultType="long">
+        SELECT DISTINCT oi.product_id
+        FROM order_item oi
+        INNER JOIN `order` o ON oi.order_id = o.id
+        WHERE o.user_id = #{userId} AND o.status IN (1,2,3,4)
+    </select>
+
+</mapper>

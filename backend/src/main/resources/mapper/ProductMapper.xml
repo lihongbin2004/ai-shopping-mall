@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.ProductMapper">
+
+    <select id="selectById" resultType="Product">
+        SELECT * FROM product WHERE id = #{id}
+    </select>
+
+    <!-- 推荐召回：按分类 + 排除 ID，按销量降序 -->
+    <select id="selectByCategoryIdsExclude" resultType="Product">
+        SELECT * FROM product
+        WHERE status = 1
+          AND category_id IN
+          <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">
+              #{cid}
+          </foreach>
+          <if test="excludeIds != null and excludeIds.size() > 0">
+              AND id NOT IN
+              <foreach collection="excludeIds" item="eid" open="(" separator="," close=")">
+                  #{eid}
+              </foreach>
+          </if>
+        ORDER BY sales DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectPage" resultType="Product">
+        SELECT * FROM product WHERE status = 1
+        <choose>
+            <when test="sortBy == 'price_asc'">ORDER BY price ASC</when>
+            <when test="sortBy == 'price_desc'">ORDER BY price DESC</when>
+            <when test="sortBy == 'sales'">ORDER BY sales DESC</when>
+            <otherwise>ORDER BY id DESC</otherwise>
+        </choose>
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countAll" resultType="int">
+        SELECT COUNT(*) FROM product WHERE status = 1
+    </select>
+
+    <select id="selectByCategoryId" resultType="Product">
+        SELECT * FROM product WHERE category_id = #{categoryId} AND status = 1
+        <choose>
+            <when test="sortBy == 'price_asc'">ORDER BY price ASC</when>
+            <when test="sortBy == 'price_desc'">ORDER BY price DESC</when>
+            <when test="sortBy == 'sales'">ORDER BY sales DESC</when>
+            <otherwise>ORDER BY id DESC</otherwise>
+        </choose>
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByCategoryId" resultType="int">
+        SELECT COUNT(*) FROM product WHERE category_id = #{categoryId} AND status = 1
+    </select>
+
+    <select id="searchByName" resultType="Product">
+        SELECT * FROM product WHERE name LIKE #{keyword} AND status = 1
+        <choose>
+            <when test="sortBy == 'price_asc'">ORDER BY price ASC</when>
+            <when test="sortBy == 'price_desc'">ORDER BY price DESC</when>
+            <when test="sortBy == 'sales'">ORDER BY sales DESC</when>
+            <otherwise>ORDER BY id DESC</otherwise>
+        </choose>
+        LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countSearch" resultType="int">
+        SELECT COUNT(*) FROM product WHERE name LIKE #{keyword} AND status = 1
+    </select>
+
+    <!-- 按分类名搜索商品（JOIN category） -->
+    <select id="selectByCategoryName" resultType="Product">
+        SELECT p.* FROM product p
+        INNER JOIN category c ON p.category_id = c.id
+        WHERE c.name LIKE #{keyword} AND p.status = 1
+        ORDER BY p.sales DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 按价格区间搜索商品 -->
+    <select id="selectByPrice" resultType="Product">
+        SELECT * FROM product
+        WHERE status = 1
+        <if test="minPrice != null">AND price &gt;= #{minPrice}</if>
+        <if test="maxPrice != null">AND price &lt;= #{maxPrice}</if>
+        ORDER BY price ASC
+        LIMIT #{limit}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO product(name, description, price, stock, category_id, image, sales, status, create_time)
+        VALUES(#{name}, #{description}, #{price}, #{stock}, #{categoryId}, #{image}, #{sales}, #{status}, #{createTime})
+    </insert>
+
+    <update id="update">
+        UPDATE product
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="description != null">description = #{description},</if>
+            <if test="price != null">price = #{price},</if>
+            <if test="stock != null">stock = #{stock},</if>
+            <if test="categoryId != null">category_id = #{categoryId},</if>
+            <if test="image != null">image = #{image},</if>
+            <if test="status != null">status = #{status},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateStock">
+        UPDATE product SET stock = stock - #{quantity} WHERE id = #{id} AND stock >= #{quantity}
+    </update>
+
+    <update id="addSales">
+        UPDATE product SET sales = sales + #{quantity} WHERE id = #{id}
+    </update>
+
+    <update id="reduceSales">
+        UPDATE product SET sales = sales - #{quantity} WHERE id = #{id} AND sales >= #{quantity}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM product WHERE id = #{id}
+    </delete>
+
+</mapper>

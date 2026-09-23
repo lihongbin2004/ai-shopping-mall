@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.CouponMapper">
+
+    <select id="selectById" resultType="Coupon">
+        SELECT * FROM coupon WHERE id = #{id}
+    </select>
+
+    <select id="selectList" resultType="Coupon">
+        SELECT * FROM coupon ORDER BY create_time DESC
+    </select>
+
+    <select id="selectUsable" resultType="Coupon">
+        SELECT * FROM coupon WHERE stock > 0 AND NOW() BETWEEN start_time AND end_time ORDER BY create_time DESC
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO coupon(name, amount, min_amount, stock, start_time, end_time, create_time, status)
+        VALUES(#{name}, #{amount}, #{minAmount}, #{stock}, #{startTime}, #{endTime}, #{createTime}, #{status})
+    </insert>
+
+    <update id="update">
+        UPDATE coupon
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="amount != null">amount = #{amount},</if>
+            <if test="minAmount != null">min_amount = #{minAmount},</if>
+            <if test="stock != null">stock = #{stock},</if>
+            <if test="startTime != null">start_time = #{startTime},</if>
+            <if test="endTime != null">end_time = #{endTime},</if>
+            <if test="status != null">status = #{status},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM coupon WHERE id = #{id}
+    </delete>
+
+    <update id="reduceStock">
+        UPDATE coupon SET stock = stock - 1 WHERE id = #{id} AND stock > 0
+    </update>
+
+</mapper>

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.OrderMapper">
+
+    <select id="selectById" resultType="Order">
+        SELECT * FROM `orders` WHERE id = #{id}
+    </select>
+
+    <select id="selectByOrderNo" resultType="Order">
+        SELECT * FROM `orders` WHERE order_no = #{orderNo}
+    </select>
+
+    <select id="selectByUserId" resultType="Order">
+        SELECT * FROM `orders` WHERE user_id = #{userId} ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="selectByUserIdAndStatus" resultType="Order">
+        SELECT * FROM `orders` WHERE user_id = #{userId} AND status = #{status} ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByUserId" resultType="int">
+        SELECT COUNT(*) FROM `orders` WHERE user_id = #{userId}
+    </select>
+
+    <select id="countByUserIdAndStatus" resultType="int">
+        SELECT COUNT(*) FROM `orders` WHERE user_id = #{userId} AND status = #{status}
+    </select>
+
+    <select id="sumPaidAmountByUserId" resultType="java.math.BigDecimal">
+        SELECT IFNULL(SUM(total_amount), 0) FROM `orders` WHERE user_id = #{userId} AND status IN (1, 2, 3)
+    </select>
+
+    <select id="selectByStatus" resultType="Order">
+        SELECT * FROM `orders` WHERE status = #{status} ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByStatus" resultType="int">
+        SELECT COUNT(*) FROM `orders` WHERE status = #{status}
+    </select>
+
+    <select id="selectAll" resultType="Order">
+        SELECT * FROM `orders` ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="sumRevenue" resultType="java.math.BigDecimal">
+        SELECT IFNULL(SUM(total_amount), 0) FROM `orders` WHERE status IN (1, 2, 3)
+    </select>
+
+    <select id="countAll" resultType="int">
+        SELECT COUNT(*) FROM `orders`
+    </select>
+
+    <select id="selectByOrderNoLike" resultType="Order">
+        SELECT * FROM `orders` WHERE order_no LIKE CONCAT('%', #{orderNo}, '%') ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByOrderNoLike" resultType="int">
+        SELECT COUNT(*) FROM `orders` WHERE order_no LIKE CONCAT('%', #{orderNo}, '%')
+    </select>
+
+    <select id="selectByStatusAndOrderNoLike" resultType="Order">
+        SELECT * FROM `orders` WHERE status = #{status} AND order_no LIKE CONCAT('%', #{orderNo}, '%') ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByStatusAndOrderNoLike" resultType="int">
+        SELECT COUNT(*) FROM `orders` WHERE status = #{status} AND order_no LIKE CONCAT('%', #{orderNo}, '%')
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO `orders`(order_no, user_id, total_amount, status, address_id, address_snapshot, payment, create_time, remark)
+        VALUES(#{orderNo}, #{userId}, #{totalAmount}, #{status}, #{addressId}, #{addressSnapshot}, #{payment}, #{createTime}, #{remark})
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE `orders` SET status = #{status} WHERE id = #{id}
+    </update>
+
+    <update id="updatePayTime">
+        UPDATE `orders` SET status = #{status}, pay_time = #{payTime}, pay_amount = total_amount WHERE id = #{id}
+    </update>
+
+    <update id="updateFinishTime">
+        UPDATE `orders` SET status = #{status}, finish_time = #{finishTime} WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM `orders` WHERE id = #{id}
+    </delete>
+
+</mapper>

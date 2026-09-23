@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.ReviewMapper">
+
+    <select id="selectById" resultType="Review">
+        SELECT * FROM review WHERE id = #{id}
+    </select>
+
+    <select id="selectByProductId" resultType="Review">
+        SELECT * FROM review WHERE product_id = #{productId} ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByProductId" resultType="int">
+        SELECT COUNT(*) FROM review WHERE product_id = #{productId}
+    </select>
+
+    <select id="selectByUserId" resultType="Review">
+        SELECT * FROM review WHERE user_id = #{userId} ORDER BY create_time DESC LIMIT #{offset}, #{limit}
+    </select>
+
+    <select id="countByUserId" resultType="int">
+        SELECT COUNT(*) FROM review WHERE user_id = #{userId}
+    </select>
+
+    <select id="avgRatingByProductId" resultType="double">
+        SELECT IFNULL(AVG(rating), 0) FROM review WHERE product_id = #{productId}
+    </select>
+
+    <select id="selectByUserAndProduct" resultType="Review">
+        SELECT * FROM review WHERE user_id = #{userId} AND product_id = #{productId} LIMIT 1
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO review(user_id, product_id, rating, content, create_time)
+        VALUES(#{userId}, #{productId}, #{rating}, #{content}, #{createTime})
+    </insert>
+
+    <update id="update">
+        UPDATE review
+        <set>
+            <if test="rating != null">rating = #{rating},</if>
+            <if test="content != null">content = #{content},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM review WHERE id = #{id}
+    </delete>
+
+    <!-- 检查用户是否有已完成订单（status=3）包含指定商品 -->
+    <select id="countCompletedOrderWithProduct" resultType="int">
+        SELECT COUNT(DISTINCT o.id) FROM `orders` o
+        INNER JOIN order_item oi ON oi.order_id = o.id
+        WHERE o.user_id = #{userId} AND o.status = 3 AND oi.product_id = #{productId}
+    </select>
+
+</mapper>

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.RefundOrderMapper">
+
+    <resultMap id="RefundMap" type="RefundOrder">
+        <id property="id" column="id" />
+        <result property="refundNo" column="refund_no" />
+        <result property="orderId" column="order_id" />
+        <result property="orderNo" column="order_no" />
+        <result property="userId" column="user_id" />
+        <result property="productId" column="product_id" />
+        <result property="reason" column="reason" />
+        <result property="description" column="description" />
+        <result property="refundAmount" column="refund_amount" />
+        <result property="status" column="status" />
+        <result property="rejectReason" column="reject_reason" />
+        <result property="adminReply" column="admin_reply" />
+        <result property="createTime" column="create_time" />
+        <result property="auditTime" column="audit_time" />
+        <result property="refundTime" column="refund_time" />
+    </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO refund_orders(refund_no, order_id, order_no, user_id, product_id, reason, description, refund_amount, status, create_time)
+        VALUES(#{refundNo}, #{orderId}, #{orderNo}, #{userId}, #{productId}, #{reason}, #{description}, #{refundAmount}, #{status}, #{createTime})
+    </insert>
+
+    <select id="selectById" resultMap="RefundMap">
+        SELECT * FROM refund_orders WHERE id = #{id}
+    </select>
+
+    <select id="selectByRefundNo" resultMap="RefundMap">
+        SELECT * FROM refund_orders WHERE refund_no = #{refundNo}
+    </select>
+
+    <select id="selectByUserId" resultMap="RefundMap">
+        SELECT * FROM refund_orders WHERE user_id = #{userId} ORDER BY create_time DESC
+    </select>
+
+    <select id="selectAll" resultMap="RefundMap">
+        SELECT r.*, u.username AS username, p.name AS productName, p.image AS productImage
+        FROM refund_orders r
+        LEFT JOIN user u ON r.user_id = u.id
+        LEFT JOIN product p ON r.product_id = p.id
+        <where>
+            <if test="params.status != null">AND r.status = #{params.status}</if>
+            <if test="params.keyword != null and params.keyword != ''">AND (r.refund_no LIKE CONCAT('%', #{params.keyword}, '%') OR r.order_no LIKE CONCAT('%', #{params.keyword}, '%'))</if>
+        </where>
+        ORDER BY r.create_time DESC
+        LIMIT #{params.offset}, #{params.limit}
+    </select>
+
+    <select id="countAll" resultType="int">
+        SELECT COUNT(*) FROM refund_orders r
+        <where>
+            <if test="params.status != null">AND r.status = #{params.status}</if>
+            <if test="params.keyword != null and params.keyword != ''">AND (r.refund_no LIKE CONCAT('%', #{params.keyword}, '%') OR r.order_no LIKE CONCAT('%', #{params.keyword}, '%'))</if>
+        </where>
+    </select>
+
+    <update id="updateAudit">
+        UPDATE refund_orders
+        SET status = #{status},
+            reject_reason = #{rejectReason},
+            admin_reply = #{adminReply},
+            audit_time = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateRefund">
+        UPDATE refund_orders
+        SET status = 3,
+            refund_time = #{refundTime}
+        WHERE id = #{id}
+    </update>
+
+</mapper>

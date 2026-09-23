@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.CategoryMapper">
+
+    <select id="selectById" resultType="Category">
+        SELECT * FROM category WHERE id = #{id}
+    </select>
+
+    <select id="selectList" resultType="Category">
+        SELECT * FROM category ORDER BY sort ASC, id ASC
+    </select>
+
+    <select id="selectByParentId" resultType="Category">
+        SELECT * FROM category WHERE parent_id = #{parentId} ORDER BY sort ASC
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO category(name, parent_id, sort, create_time)
+        VALUES(#{name}, #{parentId}, #{sort}, #{createTime})
+    </insert>
+
+    <update id="update">
+        UPDATE category
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="sort != null">sort = #{sort},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM category WHERE id = #{id}
+    </delete>
+
+</mapper>

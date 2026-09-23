@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.KnowledgeSectionMapper">
+
+    <resultMap id="BaseResultMap" type="com.mall.entity.KnowledgeSection">
+        <id     column="id"          property="id"/>
+        <result column="name"        property="name"/>
+        <result column="type"        property="type"/>
+        <result column="content"     property="content"/>
+        <result column="sort_order"  property="sortOrder"/>
+        <result column="enabled"     property="enabled"/>
+        <result column="created_at"  property="createdAt"/>
+        <result column="updated_at"  property="updatedAt"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, name, type, content, sort_order, enabled, created_at, updated_at
+    </sql>
+
+    <select id="selectEnabled" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM knowledge_section
+        WHERE enabled = 1
+        ORDER BY sort_order ASC, id ASC
+    </select>
+
+    <select id="selectAll" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM knowledge_section
+        ORDER BY sort_order ASC, id ASC
+    </select>
+
+    <select id="selectById" resultMap="BaseResultMap">
+        SELECT <include refid="Base_Column_List"/>
+        FROM knowledge_section
+        WHERE id = #{id}
+    </select>
+
+    <insert id="insert" parameterType="com.mall.entity.KnowledgeSection"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO knowledge_section
+            (name, type, content, sort_order, enabled)
+        VALUES
+            (#{name}, #{type}, #{content}, #{sortOrder}, #{enabled})
+    </insert>
+
+    <update id="update" parameterType="com.mall.entity.KnowledgeSection">
+        UPDATE knowledge_section
+        SET name       = #{name},
+            type       = #{type},
+            content    = #{content},
+            sort_order = #{sortOrder},
+            enabled    = #{enabled}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateEnabled">
+        UPDATE knowledge_section SET enabled = #{enabled} WHERE id = #{id}
+    </update>
+
+    <delete id="deleteById">
+        DELETE FROM knowledge_section WHERE id = #{id}
+    </delete>
+</mapper>

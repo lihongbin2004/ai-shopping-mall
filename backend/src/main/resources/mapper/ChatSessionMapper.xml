@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.mall.mapper.ChatSessionMapper">
+
+    <select id="selectById" resultType="ChatSession">
+        SELECT * FROM chat_session WHERE id = #{id}
+    </select>
+
+    <select id="selectActiveByUserId" resultType="ChatSession">
+        SELECT * FROM chat_session WHERE user_id = #{userId} AND status = 0 ORDER BY last_time DESC LIMIT 1
+    </select>
+
+    <select id="selectActiveByAdminId" resultType="ChatSession">
+        SELECT * FROM chat_session WHERE admin_id = #{adminId} AND status = 0 ORDER BY last_time DESC
+    </select>
+
+    <select id="selectAllActive" resultType="ChatSession">
+        SELECT * FROM chat_session WHERE status = 0 ORDER BY last_time DESC
+    </select>
+
+    <select id="selectRecentByUserId" resultType="ChatSession">
+        SELECT * FROM chat_session WHERE user_id = #{userId} ORDER BY COALESCE(last_time, create_time) DESC LIMIT #{limit}
+    </select>
+
+    <select id="selectRecentByAdminId" resultType="ChatSession">
+        SELECT * FROM chat_session WHERE admin_id = #{adminId} ORDER BY COALESCE(last_time, create_time) DESC LIMIT #{limit}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO chat_session(user_id, admin_id, status, last_message, last_time, create_time)
+        VALUES(#{userId}, #{adminId}, #{status}, #{lastMessage}, #{lastTime}, #{createTime})
+    </insert>
+
+    <update id="update">
+        UPDATE chat_session
+        SET admin_id = #{adminId}, status = #{status}, last_message = #{lastMessage},
+            last_time = #{lastTime}, unread_count = #{unreadCount}, admin_unread = #{adminUnread}
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateLastMessage">
+        UPDATE chat_session SET last_message = #{message}, last_time = #{time} WHERE id = #{id}
+    </update>
+
+    <update id="incAdminUnread">
+        UPDATE chat_session SET admin_unread = admin_unread + 1 WHERE id = #{id}
+    </update>
+
+    <update id="incUserUnread">
+        UPDATE chat_session SET unread_count = unread_count + 1 WHERE id = #{id}
+    </update>
+
+    <update id="clearAdminUnread">
+        UPDATE chat_session SET admin_unread = 0 WHERE id = #{id}
+    </update>
+
+    <update id="clearUserUnread">
+        UPDATE chat_session SET unread_count = 0 WHERE id = #{id}
+    </update>
+
+    <update id="closeSession">
+        UPDATE chat_session SET status = 1 WHERE id = #{id}
+    </update>
+
+    <update id="assignAdmin">
+        UPDATE chat_session SET admin_id = #{adminId} WHERE id = #{id} AND admin_id IS NULL
+    </update>
+
+</mapper>
