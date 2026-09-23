@@ -30,7 +30,9 @@
             <when test="sortBy == 'price_asc'">ORDER BY price ASC</when>
             <when test="sortBy == 'price_desc'">ORDER BY price DESC</when>
             <when test="sortBy == 'sales'">ORDER BY sales DESC</when>
-            <otherwise>ORDER BY id DESC</otherwise>
+            <when test="sortBy == 'newest'">ORDER BY id DESC</when>
+            <when test="sortBy == 'id'">ORDER BY id ASC</when>
+            <otherwise>ORDER BY sales DESC, id DESC</otherwise>
         </choose>
         LIMIT #{offset}, #{limit}
     </select>
@@ -45,7 +47,9 @@
             <when test="sortBy == 'price_asc'">ORDER BY price ASC</when>
             <when test="sortBy == 'price_desc'">ORDER BY price DESC</when>
             <when test="sortBy == 'sales'">ORDER BY sales DESC</when>
-            <otherwise>ORDER BY id DESC</otherwise>
+            <when test="sortBy == 'newest'">ORDER BY id DESC</when>
+            <when test="sortBy == 'id'">ORDER BY id ASC</when>
+            <otherwise>ORDER BY sales DESC, id DESC</otherwise>
         </choose>
         LIMIT #{offset}, #{limit}
     </select>
@@ -60,7 +64,9 @@
             <when test="sortBy == 'price_asc'">ORDER BY price ASC</when>
             <when test="sortBy == 'price_desc'">ORDER BY price DESC</when>
             <when test="sortBy == 'sales'">ORDER BY sales DESC</when>
-            <otherwise>ORDER BY id DESC</otherwise>
+            <when test="sortBy == 'newest'">ORDER BY id DESC</when>
+            <when test="sortBy == 'id'">ORDER BY id ASC</when>
+            <otherwise>ORDER BY sales DESC, id DESC</otherwise>
         </choose>
         LIMIT #{offset}, #{limit}
     </select>

@@ -9,6 +9,8 @@ import java.util.List;
 public interface ProductSkuMapper {
     List<ProductSku> selectByProductId(@Param("productId") Long productId);
     ProductSku selectById(Long id);
+    int insert(ProductSku sku);
+    int deleteByProductId(@Param("productId") Long productId);
     int updateStock(@Param("id") Long id, @Param("delta") int delta);
     int reduceSales(@Param("id") Long id, @Param("quantity") int quantity);
     int addSales(@Param("id") Long id, @Param("quantity") int quantity);

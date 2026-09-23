@@ -57,7 +57,7 @@ export function getHotProducts() {
   return request({
     url: '/product/page',
     method: 'get',
-    params: { page: 1, size: 4 }
+    params: { page: 1, size: 8, sortBy: 'sales' }
   })
 }
 
@@ -65,7 +65,7 @@ export function getNewProducts() {
   return request({
     url: '/product/page',
     method: 'get',
-    params: { page: 1, size: 4 }
+    params: { page: 1, size: 8, sortBy: 'newest' }
   })
 }
 

@@ -15,7 +15,7 @@
     </select>
 
     <select id="selectList" resultType="User">
-        SELECT * FROM user ORDER BY create_time DESC
+        SELECT * FROM user ORDER BY id ASC
     </select>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">

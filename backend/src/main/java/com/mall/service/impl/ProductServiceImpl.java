@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -155,18 +156,49 @@ public class ProductServiceImpl implements ProductService {
         return product;
     }
 
+    /**
+     * 全量重建商品的 SKU，并把主商品的价格（取最低 SKU 价）与库存（各 SKU 库存之和）同步到 product 表。
+     * 约定：skus 为 null 表示不动 SKU；空列表表示清空；非空列表表示先删后插。
+     */
+    private void rebuildSkus(Long productId, List<ProductSku> skus) {
+        if (skus == null) return;
+        productSkuMapper.deleteByProductId(productId);
+        if (skus.isEmpty()) return;
+
+        java.math.BigDecimal minPrice = null;
+        int totalStock = 0;
+        for (ProductSku sku : skus) {
+            sku.setId(null);
+            sku.setProductId(productId);
+            productSkuMapper.insert(sku);
+            if (sku.getStock() != null) totalStock += sku.getStock();
+            if (sku.getPrice() != null
+                    && (minPrice == null || sku.getPrice().compareTo(minPrice) < 0)) {
+                minPrice = sku.getPrice();
+            }
+        }
+        Product sync = new Product();
+        sync.setId(productId);
+        sync.setStock(totalStock);
+        if (minPrice != null) sync.setPrice(minPrice);
+        productMapper.update(sync);
+    }
+
     @Override
     @CacheEvict(value = {"product:detail", "product:hot"}, allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public Product create(Product product) {
         product.setSales(0);
-        product.setStatus(1);
+        product.setStatus(product.getStatus() == null ? 1 : product.getStatus());
         product.setCreateTime(new Date());
         productMapper.insert(product);
+        rebuildSkus(product.getId(), product.getSkus());
         return product;
     }
 
     @Override
-    @CacheEvict(value = "product:detail", key = "#product.id")
+    @CacheEvict(value = {"product:detail", "product:hot"}, allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public Product update(Product product) {
         Product existing = productMapper.selectById(product.getId());
         if (existing == null) {
@@ -180,12 +212,15 @@ public class ProductServiceImpl implements ProductService {
         if (product.getImage() != null) existing.setImage(product.getImage());
         if (product.getStatus() != null) existing.setStatus(product.getStatus());
         productMapper.update(existing);
+        rebuildSkus(product.getId(), product.getSkus());
         return existing;
     }
 
     @Override
-    @CacheEvict(value = "product:detail", key = "#id")
+    @CacheEvict(value = {"product:detail", "product:hot"}, allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
+        productSkuMapper.deleteByProductId(id);
         productMapper.deleteById(id);
     }
 }

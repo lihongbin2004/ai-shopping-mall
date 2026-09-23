@@ -25,6 +25,10 @@
         <el-icon><Goods /></el-icon>
         <span>商品管理</span>
       </el-menu-item>
+      <el-menu-item index="/admin/categories">
+        <el-icon><Menu /></el-icon>
+        <span>分类管理</span>
+      </el-menu-item>
       <el-menu-item index="/admin/orders">
         <el-icon><List /></el-icon>
         <span>订单管理</span>

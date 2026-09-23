@@ -10,6 +10,15 @@
         SELECT * FROM product_sku WHERE id = #{id}
     </select>
 
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO product_sku(product_id, sku_code, specs, price, stock, image)
+        VALUES(#{productId}, #{skuCode}, #{specs}, #{price}, #{stock}, #{image})
+    </insert>
+
+    <delete id="deleteByProductId">
+        DELETE FROM product_sku WHERE product_id = #{productId}
+    </delete>
+
     <!-- 原子更新库存：delta 负数扣减，正数恢复 -->
     <update id="updateStock">
         UPDATE product_sku SET stock = stock + #{delta} WHERE id = #{id} AND stock + #{delta} >= 0

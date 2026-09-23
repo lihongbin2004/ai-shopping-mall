@@ -133,6 +133,12 @@ const routes = [
     meta: { title: '商品管理', requiresAuth: true, requiresAdmin: true }
   },
   {
+    path: '/admin/categories',
+    name: 'CategoryManage',
+    component: () => import('@/views/admin/CategoryManage.vue'),
+    meta: { title: '分类管理', requiresAuth: true, requiresAdmin: true }
+  },
+  {
     path: '/admin/orders',
     name: 'OrderManage',
     component: () => import('@/views/admin/OrderManage.vue'),
