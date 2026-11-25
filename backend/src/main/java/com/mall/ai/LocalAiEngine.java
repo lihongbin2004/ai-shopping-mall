@@ -25,6 +25,24 @@ public class LocalAiEngine {
     @Autowired private FavoriteService favoriteService;
     @Autowired private com.mall.service.CategoryService categoryService;
     @Autowired private RAGService ragService;
+    /** 自动化购物流程：下单 / 支付 / 查订单（与大模型工具调用共用同一份实现） */
+    @Autowired private AiOrderTool aiOrderTool;
+
+    /** 支付二次确认：userId → 待确认的订单（5 分钟内有效，避免 AI 擅自扣款） */
+    private final Map<Long, PendingPay> pendingPays = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long PAY_CONFIRM_TTL_MS = 5 * 60 * 1000L;
+
+    private static class PendingPay {
+        final String orderNo;
+        final BigDecimal amount;
+        final long expireAt;
+
+        PendingPay(String orderNo, BigDecimal amount, long expireAt) {
+            this.orderNo = orderNo;
+            this.amount = amount;
+            this.expireAt = expireAt;
+        }
+    }
 
     /**
      * 处理用户消息（兼容旧调用）
@@ -78,7 +96,95 @@ public class LocalAiEngine {
             tools.add(wrapTool("addFavoritesToCart", toolRes));
             reply = (String) toolRes.getOrDefault("displayText", "好的，正在为您处理...");
         }
-        // 2. 购物车相关
+        // 2. 支付二次确认：只有用户明确回复"确认"才真正扣款（避免 AI 擅自付款）
+        else if (isPayConfirmIntent(msg)) {
+            PendingPay pending = userId == null ? null : pendingPays.get(userId);
+            if (pending == null || pending.expireAt < System.currentTimeMillis()) {
+                if (userId != null) pendingPays.remove(userId);
+                Map<String, Object> noPending = new HashMap<>();
+                noPending.put("ok", false);
+                noPending.put("message", "没有待确认的支付");
+                tools.add(wrapTool("payOrder", noPending));
+                reply = "我这边没有待确认的支付哦～ 如果要付款，先说\"帮我支付订单\"，我会把订单号和金额报给您确认。";
+            } else {
+                // 用户已确认：返回支付宝沙箱支付入口（不会直接改订单状态）
+                Map<String, Object> toolRes = aiOrderTool.createPayEntry(userId, pending.orderNo);
+                pendingPays.remove(userId);
+                tools.add(wrapTool("payOrder", toolRes));
+                reply = Boolean.TRUE.equals(toolRes.get("ok"))
+                        ? (String) toolRes.getOrDefault("displayText", "已生成支付宝沙箱支付入口，请点击下方按钮完成付款")
+                        : (String) toolRes.getOrDefault("displayText",
+                            "暂时无法拉起支付：" + toolRes.getOrDefault("message", "请稍后再试"));
+            }
+        }
+        // 3. 取消支付：清掉待确认状态，不做任何扣款
+        else if (isPayCancelIntent(msg)) {
+            boolean had = userId != null && pendingPays.remove(userId) != null;
+            Map<String, Object> cancelRes = new HashMap<>();
+            cancelRes.put("ok", false);
+            cancelRes.put("cancelled", true);
+            tools.add(wrapTool("payOrder", cancelRes));
+            reply = had
+                    ? "好的，已取消支付，订单仍保持待付款，需要时随时叫我～"
+                    : "好的，没有执行任何支付～";
+        }
+        // 4. 支付请求：先报订单号+金额，要求用户确认，不直接扣款
+        else if (isPayOrderIntent(msg)) {
+            String orderNo = extractOrderNo(userMessage);
+            Map<String, Object> payable = aiOrderTool.findPayableOrder(userId, orderNo);
+            if (Boolean.TRUE.equals(payable.get("ok"))) {
+                String no = String.valueOf(payable.get("orderNo"));
+                Object amtObj = payable.get("totalAmount");
+                BigDecimal amount = amtObj instanceof BigDecimal ? (BigDecimal) amtObj : BigDecimal.ZERO;
+                if (userId != null) {
+                    pendingPays.put(userId, new PendingPay(no, amount, System.currentTimeMillis() + PAY_CONFIRM_TTL_MS));
+                }
+                Map<String, Object> needConfirm = new HashMap<>();
+                needConfirm.put("ok", false);
+                needConfirm.put("needConfirm", true);
+                needConfirm.put("orderNo", no);
+                needConfirm.put("totalAmount", amount);
+                tools.add(wrapTool("payOrder", needConfirm));
+                reply = "\n\n💳 待确认支付\n• 订单号：**" + no + "**\n• 支付金额：¥" + amount
+                        + "\n\n支付属于资金操作，需要您亲自确认：回复\"**确认支付**\"我就继续（5 分钟内有效），回复\"取消\"则放弃。";
+            } else {
+                tools.add(wrapTool("payOrder", payable));
+                reply = (String) payable.getOrDefault("displayText",
+                        "嗯，" + payable.getOrDefault("message", "暂时没有可支付的订单") + "。");
+            }
+        }
+        // 5. 下单（把购物车结算，或直接买某个商品）
+        else if (isCreateOrderIntent(msg)) {
+            String productName = extractOrderProductName(userMessage);
+            Integer quantity = extractQuantity(msg);
+            boolean fromCart = msg.contains("购物车") || productName.isEmpty();
+            Map<String, Object> toolRes = aiOrderTool.createOrder(userId, fromCart ? "购物车" : productName, quantity);
+            if (Boolean.TRUE.equals(toolRes.get("ok"))) {
+                tools.add(wrapTool("createOrder", toolRes));
+                reply = (String) toolRes.getOrDefault("displayText", "下单成功～");
+            } else {
+                tools.add(wrapTool("createOrder", toolRes));
+                String text = (String) toolRes.get("displayText");
+                if (text == null || text.trim().isEmpty()) {
+                    text = "\n\n❌ " + toolRes.getOrDefault("message", "下单没有成功") + "。";
+                    if (!fromCart) {
+                        text += "\n您可以告诉我\"找一下" + productName + "\"，我先帮您确认商城有没有这款～";
+                    }
+                }
+                reply = text;
+            }
+        }
+        // 6. 查询订单 / 订单状态
+        else if (isQueryOrderIntent(msg)) {
+            Integer statusFilter = AiOrderTool.detectStatusFilter(msg);
+            Map<String, Object> toolRes = aiOrderTool.listOrders(userId, statusFilter, 5);
+            tools.add(wrapTool("getOrders", toolRes));
+            reply = Boolean.TRUE.equals(toolRes.get("ok"))
+                    ? (String) toolRes.getOrDefault("displayText", "好的，正在为您查询订单...")
+                    : (String) toolRes.getOrDefault("displayText",
+                        "查询订单出错了：" + toolRes.getOrDefault("message", "请稍后再试"));
+        }
+        // 7. 购物车相关
         else if (msg.contains("清空") && msg.contains("购物车")) {
             Map<String, Object> toolRes = doClearCart(userId);
             tools.add(wrapTool("clearCart", toolRes));
@@ -126,30 +232,72 @@ public class LocalAiEngine {
                 reply = (String) toolRes.getOrDefault("displayText", "嗯，加购的时候遇到点问题，您换个商品名再试试？");
             }
         }
-        // 3. 搜索/找商品
+        // 8. 查商品规格 / 参数 / 配置版本
+        else if (isSpecQueryIntent(msg)) {
+            System.out.println("[LocalAiEngine] 命中规格查询分支: msg=" + msg);
+            // 先剥掉规格查询专用修饰词，再抽商品名
+            String stripped = userMessage;
+            for (String kw : new String[]{"有哪些规格的", "有什么规格的", "规格的", "规格",
+                    "有哪些参数的", "有什么参数的", "参数",
+                    "有哪些配置的", "有什么配置的", "配置",
+                    "有哪些版本的", "有什么版本的", "版本",
+                    "有哪些", "都有哪些", "有什么", "有啥", "的尺寸", "的颜色", "的内存", "的容量", "的重量", "多厚"}) {
+                stripped = stripped.replace(kw, " ");
+            }
+            stripped = stripped.replaceAll("\\s+", " ").trim();
+            String productName = extractProductName(stripped);
+            System.out.println("[LocalAiEngine] stripped='" + stripped + "' → productName='" + productName + "'");
+            // 如果没抽到商品名但有上下文，尝试从历史里找
+            if (productName == null || productName.isEmpty()) {
+                productName = extractProductNameFromHistory(userMessage, history);
+            }
+            if (productName == null || productName.isEmpty()) {
+                reply = "想查哪个商品的规格呢？比如「IQOO11 有哪些规格」～";
+            } else {
+                Map<String, Object> toolRes = aiOrderTool.getProductSpecs(productName);
+                tools.add(wrapTool("getProductSpecs", toolRes));
+                reply = (String) toolRes.getOrDefault("displayText", "好的，正在为您查看「" + productName + "」的规格...");
+            }
+        }
+        // 9. 搜索/找商品
         else if (msg.contains("搜") || msg.contains("找") || msg.contains("推荐") || msg.contains("想要") || msg.contains("有没有") || msg.contains("元以下") || msg.contains("元以上") || msg.contains("元以内") || msg.contains("价格") || msg.contains("能买") || msg.contains("想买") || (msg.contains("买") && (msg.contains("什么") || msg.contains("哪些")))) {
             String keyword = extractKeyword(msg);
             BigDecimal maxPrice = extractMaxPrice(msg);
             BigDecimal minPrice = extractMinPrice(msg);
+            // 语义推荐类需求（"我喜欢打手游，推荐我买什么"/"送女朋友什么好"）交给大模型：
+            // 它能结合商品描述理解场景并说明推荐理由，本地引擎只会机械罗列商品清单
+            if (isSemanticRecommend(msg)) return null;
             Map<String, Object> args = new HashMap<>();
             args.put("keyword", keyword);
             if (maxPrice != null) args.put("maxPrice", maxPrice);
             if (minPrice != null) args.put("minPrice", minPrice);
             Map<String, Object> toolRes = doSearchProduct(args);
+            String matchType = String.valueOf(toolRes.getOrDefault("matchType", "none"));
+            // 只有真按商品名/价格命中才算本地能答。
+            // category 是"整类商品兜底"，hot 是"没货+销量榜"，这两种本地答出来都会答非所问
+            // （比如搜"耳机"却列出 iPhone/笔记本），所以一律交给大模型用自然语言解释。
+            boolean realMatch = "name".equals(matchType) || "price".equals(matchType);
+            // 关键：没真正匹配到商品时，本地引擎不要硬答。
+            // 否则会把用户的整句话当成商品名复述出去（如"本店暂时没有【喜欢打手游】这类商品"），
+            // 返回 null 交给大模型结合 RAG 知识库 + 全量商品清单做语义推荐。
+            if (!realMatch) return null;
             tools.add(wrapTool("searchProduct", toolRes));
-            // 直接用 doSearchProduct 里拼好的 displayText（已包含"无货说明+推荐"逻辑）
+            // 直接用 doSearchProduct 里拼好的 displayText
             reply = (String) toolRes.getOrDefault("displayText", "好的，正在为您查找商品...");
         }
-        // 4. 价格询问
+        // 9. 价格询问
         else if (msg.contains("多少钱") || msg.contains("价格") || msg.contains("便宜") || msg.contains("贵")) {
             String keyword = extractKeyword(msg);
             Map<String, Object> args = new HashMap<>();
             args.put("keyword", keyword);
             Map<String, Object> toolRes = doSearchProduct(args);
+            String matchType = String.valueOf(toolRes.getOrDefault("matchType", "none"));
+            // 同上：商品库里没有该品类时不要拿别的品类冒充，交给大模型自然解释
+            if (!"name".equals(matchType) && !"price".equals(matchType)) return null;
             tools.add(wrapTool("searchProduct", toolRes));
             reply = (String) toolRes.getOrDefault("displayText", "好的，为您查询价格...");
         }
-        // 5. 售后/退换
+        // 10. 售后/退换
         else if (msg.contains("退款") || msg.contains("退货") || msg.contains("售后")) {
             reply = "关于售后这块，给您梳理一下👇\n\n" +
                     "• 商品签收后 **7 天内**，如出现质量问题，可以申请退货退款。\n" +
@@ -158,7 +306,7 @@ public class LocalAiEngine {
                     "• 申请流程：我的订单 → 申请退款 → 填写原因 → 等待审核。\n\n" +
                     "您具体是哪个订单遇到问题？告诉我订单号，我帮您看看～";
         }
-        // 6. 优惠券
+        // 11. 优惠券
         else if (msg.contains("优惠券") || msg.contains("折扣")) {
             reply = "优惠券相关给您说清楚👇\n\n" +
                     "• 您可以在\"我的 → 优惠券中心\"领取可用的优惠券。\n" +
@@ -166,7 +314,7 @@ public class LocalAiEngine {
                     "• 每个订单只能用一张优惠券，下单时自动抵扣。\n\n" +
                     "需要我帮您看看账户里现在有哪些券吗？";
         }
-        // 7. 发货
+        // 12. 发货
         else if (msg.contains("发货") || msg.contains("物流") || msg.contains("快递")) {
             reply = "发货和物流这块给您说下👇\n\n" +
                     "• 商家会在下单后 **24 小时内**发货。\n" +
@@ -174,7 +322,7 @@ public class LocalAiEngine {
                     "• 收到货后记得点一下\"确认收货\"，交易就完成啦。\n\n" +
                     "想看哪个订单的物流？告诉我订单号～";
         }
-        // 8. 问候
+        // 13. 问候
         else if (msg.contains("你好") || msg.contains("hi") || msg.equals("hello") || msg.contains("在吗") || msg.contains("你是谁") || msg.contains("叫什么")) {
             reply = "嗨～ 我是AI智能客服**小购**🛍️\n\n" +
                     "我可以帮您：\n" +
@@ -182,16 +330,20 @@ public class LocalAiEngine {
                     "• ❤️ 玩转收藏 — \"我的收藏里有什么\"、\"把收藏全部加购\"\n" +
                     "• 🔍 搜索商品 — \"找 200 元以下的坚果\"、\"我喜欢打游戏，推荐一下\"\n" +
                     "• 💰 查价格、库存\n" +
-                    "• 📦 售后、退款、发货、优惠券等常见问题\n\n" +
+                    "• 📝 直接下单 — \"把购物车里的东西下单\"、\"帮我买一个iPhone 15 Pro Max\"\n" +
+                    "• 💳 支付订单 — \"帮我支付订单\"（我会先报金额，您回复\"确认支付\"才扣款）\n" +
+                    "• 📦 查订单、售后、退款、发货、优惠券等常见问题\n\n" +
                     "请问您想了解什么？";
         }
-        // 9. RAG 知识库兜底
+        // 14. RAG 知识库兜底
         else if (looksLikeKnowledgeQuery(msg)) {
             String rag = ragService.answerFromKnowledge(userMessage);
             if (rag != null && !rag.isEmpty()) {
                 reply = rag;
             } else {
-                reply = "嗯～ 这个问题我还在学习中😅 您换个问法，或者告诉我您想做什么，比如\"找商品\"、\"看订单\"？";
+                // 知识库检索不到足够相关的内容 → 返回 null，交给大模型结合完整知识库回答，
+                // 不要用"还在学习中"这种敷衍话术糊弄用户
+                return null;
             }
         }
         // 默认：自然语言闲聊 + 引导
@@ -201,8 +353,9 @@ public class LocalAiEngine {
             reply = "我大概明白您想说的是 \"" + trimmed + "\"～\n\n" +
                     "我目前能帮您做这些：\n" +
                     "• 🛒 加购 / 收藏 / 搜索商品\n" +
+                    "• 📝 下单 / 支付 / 📦 查订单\n" +
                     "• 💰 查价格、查库存\n" +
-                    "• 📦 订单、售后、发货、优惠券\n\n" +
+                    "• 📦 售后、发货、优惠券\n\n" +
                     "要不您试试\"我想找XX\"或者\"把XX加入购物车\"？";
         }
 
@@ -433,9 +586,9 @@ public class LocalAiEngine {
             if (addAll) {
                 targets.addAll(favs);
             } else {
-                String needle = productName.toLowerCase();
+                String needle = productName.trim();
                 for (Favorite f : favs) {
-                    if (f.getName() != null && f.getName().toLowerCase().contains(needle)) {
+                    if (AiTextUtil.sameProduct(f.getName(), needle)) {
                         targets.add(f);
                     }
                 }
@@ -624,6 +777,8 @@ public class LocalAiEngine {
         sceneMap.put("电脑", "电子产品");
         sceneMap.put("打游戏", "电子产品");
         sceneMap.put("玩游戏", "电子产品");
+        sceneMap.put("手游", "电子产品");
+        sceneMap.put("游戏", "电子产品");
         sceneMap.put("办公", "电子产品");
         sceneMap.put("手机", "电子产品");
         sceneMap.put("拍照", "电子产品");
@@ -703,19 +858,141 @@ public class LocalAiEngine {
 
     private Product findProductByName(String name) {
         if (name == null || name.trim().isEmpty()) return null;
-        @SuppressWarnings("unchecked")
-        Map<String, Object> page = productService.search(name, 1, 10, null);
-        List<Product> list = (List<Product>) page.get("list");
-        if (list == null || list.isEmpty()) return null;
-        // 只接受完全匹配或包含匹配的产品名，避免"第 个"误命中销量第一的商品
         String q = name.trim();
+        List<Product> list = searchProducts(q);
+        // 用户可能输入 "iQOO 11" / "IQOO-11" 这类带空格或连字符的型号，
+        // 归一化后再查一次，避免被数据库 LIKE 的空格挡住
+        if (list == null || list.isEmpty()) {
+            list = searchProducts(AiTextUtil.normalize(q));
+        }
+        if (list == null) return null;
+        // 归一化后接受完全匹配或包含匹配，避免"第 个"误命中销量第一的商品
         for (Product p : list) {
-            String pn = p.getName();
-            if (pn.equalsIgnoreCase(q) || pn.contains(q) || q.contains(pn)) {
+            if (AiTextUtil.sameProduct(p.getName(), q)) {
                 return p;
             }
         }
         return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Product> searchProducts(String keyword) {
+        Map<String, Object> page = productService.search(keyword, 1, 10, null);
+        if (page == null) return null;
+        return (List<Product>) page.get("list");
+    }
+
+    // ===== 订单相关意图识别 =====
+
+    /** 是否"下单/结算/直接购买"意图 */
+    private boolean isSpecQueryIntent(String msg) {
+        if (msg == null) return false;
+        // 规格相关关键词
+        for (String k : new String[]{"规格", "参数", "配置", "版本", "有哪", "都有哪"}) {
+            if (msg.contains(k)) {
+                // 排除"推荐有哪款""有什么样的"这种不是查规格的
+                if (msg.contains("推荐") || msg.contains("什么样") || msg.contains("哪款好")) return false;
+                return true;
+            }
+        }
+        // 明确问尺寸/颜色/内存/容量/尺码/重量，也算查规格
+        for (String k : new String[]{"有什么颜色", "有哪些颜色", "有什么内存", "有哪些内存",
+                "有什么容量", "有哪些容量", "有什么尺码", "有哪些尺码",
+                "尺寸多大", "重量多少", "多厚"}) {
+            if (msg.contains(k)) return true;
+        }
+        return false;
+    }
+
+    private boolean isCreateOrderIntent(String msg) {
+        if (msg == null) return false;
+        // 询价/推荐类不算下单，避免误下单
+        for (String no : new String[]{"买什么", "买哪些", "买啥", "推荐", "什么好", "哪款", "怎么买", "如何买"}) {
+            if (msg.contains(no)) return false;
+        }
+        for (String k : new String[]{"下单", "结算", "提交订单", "立即购买", "马上买", "直接买",
+                "帮我买", "替我买", "我要买", "确认购买", "买一个", "买一件", "买一份", "买台", "买部",
+                "来一个", "来一件", "要一个"}) {
+            if (msg.contains(k)) return true;
+        }
+        return false;
+    }
+
+    /** 是否"确认支付"（必须是用户明确确认，才允许扣款） */
+    private boolean isPayConfirmIntent(String msg) {
+        if (msg == null) return false;
+        for (String k : new String[]{"确认支付", "确认付款", "确认一下支付", "确认支付吧", "同意支付"}) {
+            if (msg.contains(k)) return true;
+        }
+        String t = msg.replaceAll("[\\s。！!，,～~]", "");
+        return t.equals("确认") || t.equals("确定") || t.equals("确认吧") || t.equals("确定吧")
+                || t.equals("支付吧") || t.equals("付款吧") || t.equals("可以支付") || t.equals("同意");
+    }
+
+    /** 是否"取消支付" */
+    private boolean isPayCancelIntent(String msg) {
+        if (msg == null) return false;
+        for (String k : new String[]{"取消支付", "取消付款", "不付了", "先不付", "不用付了",
+                "不支付了", "取消吧", "算了"}) {
+            if (msg.contains(k)) return true;
+        }
+        return false;
+    }
+
+    /** 是否"支付/付款"意图（排除"支付方式""待付款订单"这类咨询/查询） */
+    private boolean isPayOrderIntent(String msg) {
+        if (msg == null) return false;
+        for (String no : new String[]{"支付方式", "怎么支付", "如何支付", "付款方式", "怎么付款", "如何付款",
+                "待付款", "未付款", "付款订单", "待支付", "未支付", "付款了吗", "支付了吗"}) {
+            if (msg.contains(no)) return false;
+        }
+        for (String k : new String[]{"支付订单", "支付一下", "帮我支付", "去支付", "帮我付", "帮我付款",
+                "我要付款", "付款吧", "付一下", "结账", "付钱"}) {
+            if (msg.contains(k)) return true;
+        }
+        return false;
+    }
+
+    /** 是否"查订单/订单状态"意图 */
+    private boolean isQueryOrderIntent(String msg) {
+        if (msg == null) return false;
+        for (String k : new String[]{"我的订单", "查订单", "查询订单", "查一下订单", "查下订单", "看看订单",
+                "订单列表", "订单状态", "订单号", "订单到哪", "订单进度", "订单怎么", "下过什么单", "买过什么",
+                "我的快递到哪", "待付款订单", "待发货订单", "待收货订单", "已完成订单", "已取消订单",
+                "退款订单", "所有订单"}) {
+            if (msg.contains(k)) return true;
+        }
+        return false;
+    }
+
+    /** 从用户原话中抽取订单号（ORD + 数字） */
+    private String extractOrderNo(String rawMsg) {
+        if (rawMsg == null) return "";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("ORD\\d{10,}").matcher(rawMsg);
+        return m.find() ? m.group() : "";
+    }
+
+    /**
+     * 下单用的商品名抽取：与 extractProductName 不同，这里保留型号里的数字
+     * （"帮我买一个 iPhone 15 Pro Max" → "iPhone 15 Pro Max"）
+     */
+    private String extractOrderProductName(String rawMsg) {
+        if (rawMsg == null) return "";
+        String s = rawMsg.trim();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("[「『\"']([^」』\"']+)[」』\"']").matcher(s);
+        if (m.find()) return m.group(1).trim();
+        for (String kw : new String[]{"帮我下单", "我要买", "我想买", "帮我买", "替我买", "给我",
+                "购买", "买一个", "买一件", "买一份", "买台", "买部", "下单", "结算", "提交订单",
+                "立即", "马上", "直接", "帮我", "麻烦", "请", "我要", "我想",
+                "把", "将", "一个", "一件", "一份", "购物车", "全部", "所有", "商品", "东西",
+                "里", "的", "吧", "呢", "啊", "呀", "哦", "可以吗", "吗", "谢谢", "。", "，", ","}) {
+            s = s.replace(kw, " ");
+        }
+        // 去掉开头的数量（"2个iPhone" → "iPhone"），但保留型号中间的数字
+        s = s.replaceAll("^\\s*[一二三四五六七八九十\\d]+\\s*(?:个|件|份|台|只)?", " ");
+        s = s.replaceAll("\\s+", " ").trim();
+        if (s.length() > 30) s = s.substring(0, 30);
+        return s;
     }
 
     // ===== 简易文本解析 =====
@@ -730,8 +1007,15 @@ public class LocalAiEngine {
                     return i;
                 }
             }
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)\\s*(?:件|份|个|只)?").matcher(stripped);
-            if (m.find()) {
+            // 数字必须带量词（"2件/3个/1台"），或紧跟在"买/要/来/加购"后面，
+            // 否则会把型号里的数字（iPhone 15 Pro Max 的 15）误当成数量
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)\\s*(?:件|份|个|只|台)").matcher(stripped);
+            boolean found = m.find();
+            if (!found) {
+                m = java.util.regex.Pattern.compile("(?:买|要|来|加购)\\s*(\\d+)").matcher(stripped);
+                found = m.find();
+            }
+            if (found) {
                 int n = Integer.parseInt(m.group(1));
                 if (n > 0 && n < 100) return n;
             }
@@ -745,17 +1029,41 @@ public class LocalAiEngine {
         if (m.find()) return m.group(1).trim();
         // 否则去掉动作词后剩下的
         String s = msg;
-        for (String kw : new String[]{"帮我", "麻烦", "请", "把", "将", "给我", "我要", "我想", "买",
+        for (String kw : new String[]{"帮我", "麻烦", "请", "把", "将", "给我", "我要", "我想",
+                "看看", "看下", "查一下", "查看",
+                "购买", "买",
                 "加购", "加进", "加入", "加购物车", "加进购物车", "加入到购物车", "加入购物车", "添加到购物车",
                 "全部", "收藏里的", "收藏的", "收藏",
-                "购物车", "一下", "一个", "一些", "那个", "这个", "商品", "东西"}) {
+                "购物车", "一下", "一个", "一些", "那个", "这个", "商品", "东西", "第", "的"}) {
             s = s.replace(kw, " ");
         }
-        // 只清数字，不动"第/个"等指代关键字（指代识别放在 extractNthProductName）
-        s = s.replaceAll("\\d+", " ").trim();
+        // 只清"数量+单位"（2件/三个/1台），保留型号里的数字（iPhone 15 Pro Max）
+        s = s.replaceAll("[一二三四五六七八九十\\d]+\\s*(?:件|份|个|台|只)", " ");
+        // 再去掉开头的纯数量（"2 iPhone" → "iPhone"）
+        s = s.replaceAll("^\\s*\\d+\\s*", " ").trim();
         s = s.replaceAll("\\s+", " ");
         if (s.length() > 20) s = s.substring(0, 20);
         return s.isEmpty() ? "" : s;
+    }
+
+    /** 从历史对话里找最近提到的商品名（用户没说商品名但上下文有） */
+    private String extractProductNameFromHistory(String rawMsg, List<AiMessageLite> history) {
+        if (history == null || history.isEmpty()) return "";
+        // 先去掉"规格/参数/配置"等词再走一次 extractProductName（用户可能说"它的规格"）
+        String hint = rawMsg.toLowerCase().replaceAll("的?规格|的?参数|的?配置|的?版本|有哪些|都有哪些|有什么|有啥|的尺寸|的颜色|的内存", " ").trim();
+        hint = hint.replaceAll("\\s+", " ");
+        if (!hint.isEmpty() && hint.length() > 1 && hint.length() < 20) {
+            return hint; // 能抽出"它"/"这个"之类的指代，或者就是个商品名
+        }
+        // 否则从最近 assistant 消息里抓商品名（用【商品名】标记）
+        for (int i = history.size() - 1; i >= Math.max(0, history.size() - 5); i--) {
+            AiMessageLite h = history.get(i);
+            if (h.role != null && h.role.equalsIgnoreCase("assistant") && h.content != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("【([^】]{2,30})】").matcher(h.content);
+                if (m.find()) return m.group(1).trim();
+            }
+        }
+        return "";
     }
 
     /**
@@ -787,6 +1095,18 @@ public class LocalAiEngine {
         return "";
     }
 
+    /** 是否为"按喜好/场景/送礼"的语义推荐需求——这类需求本地引擎答不好，交给大模型 */
+    private boolean isSemanticRecommend(String msg) {
+        if (msg == null) return false;
+        String[] cues = {"喜欢", "爱好", "爱玩", "平时", "经常", "适合", "送", "礼物",
+                "推荐我", "推荐点", "推荐些", "推荐几个", "推荐一下有", "推荐什么好",
+                "买什么好", "用什么好", "哪款好", "哪款更", "选哪个", "怎么选", "比较好"};
+        for (String c : cues) {
+            if (msg.contains(c)) return true;
+        }
+        return false;
+    }
+
     private String extractKeyword(String msg) {
         String s = msg;
         // 先去掉意图前缀、量词、疑问词等噪声，让真实品类词留下来
@@ -797,10 +1117,15 @@ public class LocalAiEngine {
                 "什么", "哪些", "啥", "哪种", "哪类", "哪些个",
                 "点啥", "点什么东西", "点啥东西", "点什么东西", "点什么",
                 "东西", "商品", "产品", "物品", "货",
+                // 喜好/习惯类口语词，避免"我喜欢打手游"整句被当成商品名
+                "喜欢", "爱好", "爱玩", "爱用", "爱", "平时", "经常", "最近", "常常", "一般",
+                "比较喜欢", "比较", "倾向", "偏好", "习惯", "打算", "准备",
                 "比较好", "比较合适", "合适", "好", "呢", "啊", "呗", "嘛", "吧", "哦", "呀"}) {
             s = s.replace(kw, " ");
         }
         s = s.replaceAll("[\\d,.]+", " ").replaceAll("\\s+", " ").trim();
+        // 去掉标点符号（逗号/句号/问号/感叹号），避免关键词里混入"，。"之类的字符
+        s = s.replaceAll("[，,。.！!？?、；;：:~～\\-—_\\[\\]（）()【】]", " ").replaceAll("\\s+", " ").trim();
         // 去掉后是空（比如"推荐点东西"/"推荐什么"），返回空让 searchProduct 自己走空 keyword 热品兜底
         if (s.isEmpty()) return "";
         if (s.length() > 20) s = s.substring(0, 20);

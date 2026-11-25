@@ -80,13 +80,13 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     @Override
     public String chatWithHistory(String systemPrompt, List<Map<String, String>> history, String userMessage) {
         Provider p = pickDefault();
-        return callOnce(p, systemPrompt, history, userMessage, false, null);
+        return callOnce(p, systemPrompt, history, userMessage, null, false, null);
     }
 
     @Override
     public String chatStream(String systemPrompt, List<Map<String, String>> history, String userMessage, StreamCallback onChunk) {
         Provider p = pickDefault();
-        return callOnce(p, systemPrompt, history, userMessage, true, onChunk);
+        return callOnce(p, systemPrompt, history, userMessage, null, true, onChunk);
     }
 
     /**
@@ -94,8 +94,17 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
      */
     public String callByProvider(String provider, String systemPrompt, List<Map<String, String>> history, String userMessage,
                                  boolean stream, StreamCallback onChunk) {
+        return callByProvider(provider, systemPrompt, history, userMessage, null, stream, onChunk);
+    }
+
+    /**
+     * 多模态调用：images 为 data:image/xxx;base64,... 或公网 http 图片地址
+     * 非空时 user 消息改用 OpenAI 多模态 content 数组（text + image_url）
+     */
+    public String callByProvider(String provider, String systemPrompt, List<Map<String, String>> history, String userMessage,
+                                 List<String> images, boolean stream, StreamCallback onChunk) {
         Provider p = pickByName(provider);
-        return callOnce(p, systemPrompt, history, userMessage, stream, onChunk);
+        return callOnce(p, systemPrompt, history, userMessage, images, stream, onChunk);
     }
 
     public Provider pickByName(String name) {
@@ -124,7 +133,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     // =====================================================================
 
     private String callOnce(Provider p, String systemPrompt, List<Map<String, String>> history,
-                            String userMessage, boolean stream, StreamCallback onChunk) {
+                            String userMessage, List<String> images, boolean stream, StreamCallback onChunk) {
         if (p == null || !p.isEnabled()) {
             return "[" + (p == null ? "null" : p.provider) + "] 模型未配置 API Key，无法调用";
         }
@@ -150,7 +159,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
                     messages.add(messageObj(h.get("role"), h.get("content")));
                 }
             }
-            messages.add(messageObj("user", userMessage));
+            messages.add(userMessageObj(userMessage, images));
             body.put("messages", messages);
             body.put("temperature", 0.7);
             body.put("max_tokens", 2048);
@@ -202,6 +211,37 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         JSONObject m = new JSONObject();
         m.put("role", role);
         m.put("content", content);
+        return m;
+    }
+
+    /**
+     * 构造 user 消息：有图片时用 OpenAI 多模态 content 数组（text + image_url），否则纯文本
+     */
+    private JSONObject userMessageObj(String userMessage, List<String> images) {
+        if (images == null || images.isEmpty()) {
+            return messageObj("user", userMessage);
+        }
+        JSONArray parts = new JSONArray();
+
+        JSONObject textPart = new JSONObject();
+        textPart.put("type", "text");
+        textPart.put("text", (userMessage == null || userMessage.trim().isEmpty())
+                ? "请看看这张图片，告诉我它是什么商品" : userMessage);
+        parts.add(textPart);
+
+        for (String img : images) {
+            if (img == null || img.trim().isEmpty()) continue;
+            JSONObject imageUrl = new JSONObject();
+            imageUrl.put("url", img.trim());
+            JSONObject imagePart = new JSONObject();
+            imagePart.put("type", "image_url");
+            imagePart.put("image_url", imageUrl);
+            parts.add(imagePart);
+        }
+
+        JSONObject m = new JSONObject();
+        m.put("role", "user");
+        m.put("content", parts);
         return m;
     }
 

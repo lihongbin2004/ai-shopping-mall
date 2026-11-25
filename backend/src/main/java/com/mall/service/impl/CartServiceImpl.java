@@ -31,7 +31,7 @@ public class CartServiceImpl implements CartService {
     @Autowired
     private ProductSkuMapper productSkuMapper;
 
-    @Autowired
+    @Autowired(required = false)
     private StringRedisTemplate redis;
 
     private static final String CART_COUNT_KEY = "cart:count:user:";
@@ -40,7 +40,7 @@ public class CartServiceImpl implements CartService {
 
     /** 失效用户购物车数量缓存 */
     private void invalidateCount(Long userId) {
-        if (userId == null) return;
+        if (userId == null || redis == null) return;
         redis.delete(CART_COUNT_KEY + userId);
     }
 
@@ -170,6 +170,9 @@ public class CartServiceImpl implements CartService {
     @Override
     public Integer getCartCount(Long userId) {
         if (userId == null) return 0;
+        if (redis == null) {
+            return cartMapper.countByUserId(userId);
+        }
         String key = CART_COUNT_KEY + userId;
         String cached = redis.opsForValue().get(key);
         if (cached != null) {

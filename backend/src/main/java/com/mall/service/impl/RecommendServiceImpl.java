@@ -50,7 +50,7 @@ public class RecommendServiceImpl implements RecommendService {
     @Autowired private FavoriteMapper   favoriteMapper;
     @Autowired private CartMapper       cartMapper;
     @Autowired private OrderItemMapper  orderItemMapper;
-    @Autowired private StringRedisTemplate redis;
+    @Autowired(required = false) private StringRedisTemplate redis;
 
     // ========================================================
     //  公开 API

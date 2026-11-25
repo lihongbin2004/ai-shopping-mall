@@ -1,9 +1,13 @@
 import request from '@/utils/request'
 import { getToken } from '@/utils/auth'
 
-export function chatStream(message, sessionId, onMessage, onDone, onError, onSession, onToolResult, model) {
+export function chatStream(message, sessionId, onMessage, onDone, onError, onSession, onToolResult, model, images) {
   const token = getToken()
   const controller = new AbortController()
+
+  const payload = { message, sessionId, model: model || 'auto' }
+  // 多模态：有图片时一起提交（dataURL 或 http 地址）
+  if (images && images.length) payload.images = images
 
   fetch('/api/ai/chat/stream', {
     method: 'POST',
@@ -11,7 +15,7 @@ export function chatStream(message, sessionId, onMessage, onDone, onError, onSes
       'Content-Type': 'application/json',
       'Authorization': token ? 'Bearer ' + token : ''
     },
-    body: JSON.stringify({ message, sessionId, model: model || 'auto' }),
+    body: JSON.stringify(payload),
     signal: controller.signal
   }).then(async response => {
     if (!response.ok) {

@@ -29,11 +29,19 @@ public class LlmRouter {
      * 同步对话：优先用选中的模型，失败自动降级
      */
     public Result chat(String preferredProvider, String systemPrompt, List<Map<String, String>> history, String userMessage) {
+        return chat(preferredProvider, systemPrompt, history, userMessage, null);
+    }
+
+    /**
+     * 多模态同步对话：images 非空时把图片一起送给模型（DeepSeek 新版支持视觉输入）
+     */
+    public Result chat(String preferredProvider, String systemPrompt, List<Map<String, String>> history,
+                       String userMessage, List<String> images) {
         String[] order = buildOrder(preferredProvider);
         for (String name : order) {
             OpenAiCompatibleLlmClient.Provider p = client.pickByName(name);
             if (p == null || !p.isEnabled()) continue;
-            String content = client.callByProvider(name, systemPrompt, history, userMessage, false, null);
+            String content = client.callByProvider(name, systemPrompt, history, userMessage, images, false, null);
             if (isOk(content)) {
                 return new Result(content, p.provider, p.model, false);
             }
@@ -48,18 +56,26 @@ public class LlmRouter {
      */
     public Result chatStream(String preferredProvider, String systemPrompt, List<Map<String, String>> history,
                              String userMessage, LlmClient.StreamCallback onChunk) {
+        return chatStream(preferredProvider, systemPrompt, history, userMessage, null, onChunk);
+    }
+
+    /**
+     * 多模态流式对话：images 非空时把图片随用户消息一起送给视觉模型
+     */
+    public Result chatStream(String preferredProvider, String systemPrompt, List<Map<String, String>> history,
+                             String userMessage, List<String> images, LlmClient.StreamCallback onChunk) {
         String[] order = buildOrder(preferredProvider);
         for (String name : order) {
             OpenAiCompatibleLlmClient.Provider p = client.pickByName(name);
             if (p == null || !p.isEnabled()) continue;
             try {
                 // 真正走流式：每个 delta 都会通过 onChunk 实时推给前端
-                String full = client.callByProvider(name, systemPrompt, history, userMessage, true, onChunk);
+                String full = client.callByProvider(name, systemPrompt, history, userMessage, images, true, onChunk);
                 if (full != null && isOk(full)) {
                     return new Result(full, p.provider, p.model, false);
                 }
                 // 流式拿回空或错误信息 → 降级到非流式再来一次
-                String fallback = client.callByProvider(name, systemPrompt, history, userMessage, false, null);
+                String fallback = client.callByProvider(name, systemPrompt, history, userMessage, images, false, null);
                 if (isOk(fallback)) {
                     if (onChunk != null) {
                         try { onChunk.onChunk(fallback); } catch (Exception ignored) {}
@@ -69,7 +85,7 @@ public class LlmRouter {
             } catch (Exception e) {
                 System.err.println("[LlmRouter] " + name + " 流式失败，降级非流式: " + e.getMessage());
                 try {
-                    String fallback = client.callByProvider(name, systemPrompt, history, userMessage, false, null);
+                    String fallback = client.callByProvider(name, systemPrompt, history, userMessage, images, false, null);
                     if (isOk(fallback)) {
                         if (onChunk != null) {
                             try { onChunk.onChunk(fallback); } catch (Exception ignored) {}

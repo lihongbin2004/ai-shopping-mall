@@ -9,9 +9,26 @@
         <el-col :span="7">
           <div class="profile-card">
             <div class="avatar-section">
-              <el-avatar :size="90" :src="userStore.avatar">
-                {{ userStore.nickname?.charAt(0)?.toUpperCase() }}
-              </el-avatar>
+              <div class="avatar-wrapper" @click="triggerAvatarFile">
+                <el-avatar :size="90" :src="userStore.avatar">
+                  {{ userStore.nickname?.charAt(0)?.toUpperCase() }}
+                </el-avatar>
+                <div class="avatar-mask" v-if="!avatarUploading">
+                  <el-icon :size="20"><Camera /></el-icon>
+                  <span>换头像</span>
+                </div>
+                <div class="avatar-mask" v-else>
+                  <el-icon class="is-loading" :size="20"><Loading /></el-icon>
+                  <span>上传中</span>
+                </div>
+              </div>
+              <input
+                ref="avatarFileRef"
+                type="file"
+                accept="image/*"
+                style="display:none"
+                @change="onAvatarFileChange"
+              />
               <h3>{{ userStore.nickname }}</h3>
               <p class="user-id">用户ID：{{ stats.user?.id || '-' }}</p>
               <div class="badges">
@@ -285,9 +302,14 @@
           <el-input v-model="addrEditDialog.form.phone" placeholder="请输入手机号" maxlength="11" />
         </el-form-item>
         <el-form-item label="省/市/区" required>
-          <el-input v-model="addrEditDialog.form.province" placeholder="省" style="width:30%; margin-right:3%" />
-          <el-input v-model="addrEditDialog.form.city" placeholder="市" style="width:30%; margin-right:3%" />
-          <el-input v-model="addrEditDialog.form.district" placeholder="区/县" style="width:30%" />
+          <el-cascader
+            v-model="addrCodes"
+            :options="regionData"
+            :props="{ checkStrictly: false, emitPath: true }"
+            placeholder="请选择省/市/区"
+            style="width: 100%"
+            @change="onAreaChange"
+          />
         </el-form-item>
         <el-form-item label="详细地址" required>
           <el-input v-model="addrEditDialog.form.detail" type="textarea" :rows="2" placeholder="街道、楼栋、门牌号" />
@@ -307,15 +329,117 @@
 <script setup>
 import { ref, reactive, onMounted, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Camera, Loading } from '@element-plus/icons-vue'
 import Navbar from '@/components/Navbar.vue'
 import Footer from '@/components/Footer.vue'
 import { useUserStore } from '@/stores/user'
 import { updateUserInfo, updatePassword, getUserStats } from '@/api/user'
 import { getAddressList, addAddress, updateAddress, deleteAddress, setDefaultAddress } from '@/api/address'
+import { regionData } from 'element-china-area-data'
+import request from '@/utils/request'
+
+// ===== 省市区辅助工具 =====
+// 名称归一化：去掉省/市/自治区/特别行政区/区/县/市辖区 等后缀，便于匹配
+function normalizeAreaName(name) {
+  if (!name) return ''
+  return String(name)
+    .replace(/(省|市|自治区|特别行政区|回族自治区|壮族自治区|维吾尔自治区|自治区)$/g, '')
+    .replace(/(市辖区|地区|盟|自治州)$/g, '')
+    .replace(/(区|县|市)$/g, '')
+    .trim()
+}
+
+// 给定名称，在 regionData 里找到最匹配的项（优先完全相等，否则包含）
+function findRegionByName(list, name) {
+  const n = normalizeAreaName(name)
+  if (!n) return null
+  // 先完全相等
+  let found = list.find(item => normalizeAreaName(item.label) === n)
+  if (found) return found
+  // 再包含匹配
+  found = list.find(item => normalizeAreaName(item.label).includes(n) || n.includes(normalizeAreaName(item.label)))
+  return found || null
+}
+
+// 把 "湖南"/"邵阳"/"隆回" 三个名称反查成 code 数组
+function namesToCodes(province, city, district) {
+  if (!province) return []
+  const pItem = findRegionByName(regionData, province)
+  if (!pItem) return []
+  if (!city) return [pItem.value]
+  const cItem = findRegionByName(pItem.children || [], city)
+  if (!cItem) return [pItem.value]
+  if (!district) return [pItem.value, cItem.value]
+  const dItem = findRegionByName(cItem.children || [], district)
+  if (!dItem) return [pItem.value, cItem.value]
+  return [pItem.value, cItem.value, dItem.value]
+}
+
+// 把 code 数组转成名称三元组
+function codesToNames(codes) {
+  if (!codes || codes.length === 0) return { province: '', city: '', district: '' }
+  const result = { province: '', city: '', district: '' }
+  let list = regionData
+  const labels = []
+  for (const code of codes) {
+    const item = list.find(x => x.value === code)
+    if (!item) break
+    labels.push(item.label)
+    list = item.children || []
+  }
+  if (labels[0]) result.province = labels[0]
+  if (labels[1]) result.city = labels[1]
+  if (labels[2]) result.district = labels[2]
+  return result
+}
 
 const userStore = useUserStore()
 const saving = ref(false)
 const pwdLoading = ref(false)
+const avatarFileRef = ref(null)
+const avatarUploading = ref(false)
+
+// ===== 头像上传 =====
+function triggerAvatarFile() {
+  if (avatarUploading.value) return
+  avatarFileRef.value?.click()
+}
+
+async function onAvatarFileChange(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    ElMessage.warning('请选择图片文件')
+    return
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('图片不能超过 5MB')
+    return
+  }
+  avatarUploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await request({
+      url: '/upload/image',
+      method: 'post',
+      data: fd,
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    const url = res.data
+    await updateUserInfo({ avatar: url })
+    // 本地 store 同步更新，立即生效
+    const fresh = { ...(userStore.userInfo || {}), avatar: url }
+    userStore.setUserInfo(fresh)
+    ElMessage.success('头像已更新')
+  } catch (err) {
+    // request 拦截器已经弹过错误提示了
+  } finally {
+    avatarUploading.value = false
+    // 清空 input，保证选同一个文件也能重新触发
+    e.target.value = ''
+  }
+}
 const stats = reactive({
   user: null,
   totalOrders: 0,
@@ -462,6 +586,7 @@ async function changePassword() {
 
 // ============ 地址管理 ============
 const addrDialog = reactive({ visible: false, list: [] })
+const addrCodes = ref([]) // cascader 绑定的 code 数组
 const addrEditDialog = reactive({
   visible: false,
   loading: false,
@@ -470,6 +595,15 @@ const addrEditDialog = reactive({
 
 function resetAddrForm() {
   addrEditDialog.form = { id: null, receiver: '', phone: '', province: '', city: '', district: '', detail: '', isDefault: false }
+  addrCodes.value = []
+}
+
+// cascader 选择变化 → 把 code 数组转成名称写回 form
+function onAreaChange(codes) {
+  const names = codesToNames(codes)
+  addrEditDialog.form.province = names.province
+  addrEditDialog.form.city = names.city
+  addrEditDialog.form.district = names.district
 }
 
 async function openAddressDialog() {
@@ -485,6 +619,8 @@ async function openAddressDialog() {
 function openAddrEdit(addr) {
   if (addr) {
     addrEditDialog.form = { ...addr }
+    // 反向回填：把已有名称转成 code 数组供 cascader 显示
+    addrCodes.value = namesToCodes(addr.province, addr.city, addr.district)
   } else {
     resetAddrForm()
   }
@@ -578,6 +714,39 @@ onMounted(() => {
   text-align: center;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   margin-bottom: 16px;
+}
+.avatar-wrapper {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+  border-radius: 50%;
+}
+.avatar-wrapper .el-avatar {
+  transition: transform 0.2s ease;
+}
+.avatar-wrapper:hover .el-avatar {
+  transform: scale(1.05);
+}
+.avatar-mask {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  gap: 2px;
+}
+.avatar-wrapper:hover .avatar-mask {
+  opacity: 1;
+}
+.avatar-mask .el-icon {
+  margin-bottom: 2px;
 }
 .avatar-section h3 {
   margin: 12px 0 4px;

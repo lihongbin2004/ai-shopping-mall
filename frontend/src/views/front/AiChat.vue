@@ -60,9 +60,6 @@
         </div>
 
         <div class="sidebar-bottom">
-          <el-button text class="action-btn" @click="$router.push('/knowledge')">
-            <el-icon><Reading /></el-icon> 知识库
-          </el-button>
           <el-button text class="action-btn" @click="handleClear">
             <el-icon><Delete /></el-icon> 清空所有
           </el-button>
@@ -89,6 +86,19 @@
             </div>
             <div class="msg-content-wrapper">
               <div class="msg-role">{{ msg.role === 'assistant' ? 'AI助手' : '我' }}</div>
+              <!-- 多模态：用户上传的图片 -->
+              <div v-if="msg.images && msg.images.length" class="msg-images">
+                <el-image
+                  v-for="(img, idx) in msg.images"
+                  :key="idx"
+                  :src="img"
+                  :preview-src-list="msg.images"
+                  :initial-index="idx"
+                  fit="cover"
+                  class="msg-image"
+                  preview-teleported
+                />
+              </div>
               <div class="msg-content" v-html="renderContent(msg.content)"></div>
             </div>
           </div>
@@ -106,16 +116,65 @@
             </div>
           </div>
         </div>
+        <!-- AI 自动化购物：确认支付后，由用户点击按钮打开支付宝沙箱收银台 -->
+        <div v-if="aiStore.pendingPay" class="pay-bar">
+          <div class="pay-bar-info">
+            <el-icon :size="18"><Wallet /></el-icon>
+            <span>
+              待支付订单 <b>{{ aiStore.pendingPay.orderNo }}</b>，应付
+              <b class="pay-amount">¥{{ aiStore.pendingPay.totalAmount }}</b>
+            </span>
+          </div>
+          <div class="pay-bar-actions">
+            <el-button type="primary" size="small" :loading="payOpening" @click="handleOpenPay">
+              去支付宝沙箱支付
+            </el-button>
+            <el-button text size="small" @click="aiStore.dismissPendingPay()">稍后支付</el-button>
+          </div>
+        </div>
         <div class="chat-input-bar">
+          <!-- 多模态：待发送图片预览 -->
+          <div v-if="pendingImages.length" class="pending-images">
+            <div v-for="(img, idx) in pendingImages" :key="idx" class="pending-item">
+              <el-image :src="img" fit="cover" class="pending-image" />
+              <el-icon class="pending-remove" @click="removeImage(idx)"><Close /></el-icon>
+            </div>
+          </div>
           <el-input
             v-model="inputText"
             type="textarea"
             :rows="2"
-            placeholder="输入消息，按 Enter 发送..."
+            placeholder="输入消息，按 Enter 发送；点 📷 可以让 AI 看图片推荐商品..."
             :disabled="aiStore.loading"
             @keyup.enter.prevent="sendMessage"
           />
           <div class="input-actions">
+            <el-tooltip :content="micTooltip" placement="top">
+              <el-button
+                :class="{ 'mic-active': listening }"
+                text
+                :disabled="aiStore.loading || !recognitionSupported"
+                @click="toggleVoiceInput"
+              >
+                <el-icon :size="18"><Microphone /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <el-button
+              text
+              :disabled="aiStore.loading || pendingImages.length >= 3"
+              title="上传图片（最多 3 张）"
+              @click="triggerPickImage"
+            >
+              <el-icon :size="18"><Picture /></el-icon>
+            </el-button>
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept="image/*"
+              multiple
+              style="display: none"
+              @change="onFileChange"
+            />
             <el-button
               v-if="aiStore.loading"
               type="danger"
@@ -126,7 +185,7 @@
             <el-button
               v-else
               type="primary"
-              :disabled="!inputText.trim()"
+              :disabled="!inputText.trim() && !pendingImages.length"
               @click="sendMessage"
             >
               <el-icon><Promotion /></el-icon> 发送
@@ -139,7 +198,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, watch, onMounted } from 'vue'
+import { ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import {
@@ -151,7 +210,10 @@ import {
   User,
   VideoPause,
   Promotion,
-  Reading
+  Picture,
+  Close,
+  Microphone,
+  Wallet
 } from '@element-plus/icons-vue'
 import { useAiStore } from '@/stores/ai'
 
@@ -159,6 +221,89 @@ const router = useRouter()
 const aiStore = useAiStore()
 const inputText = ref('')
 const msgRef = ref(null)
+// 多模态：待发送的图片（dataURL）
+const fileInputRef = ref(null)
+const pendingImages = ref([])
+// 支付宝沙箱支付按钮的 loading（点击后生成支付表单并提交到新窗口）
+const payOpening = ref(false)
+
+// 语音输入：浏览器原生 Web Speech API（Chrome/Edge 支持，Safari 部分支持）
+const recognitionSupported = ref(false)
+const listening = ref(false)
+const micTooltip = ref('语音输入')
+let recognition = null
+// 开始录音时输入框里已有的文字，识别结果接在它后面
+let voiceBaseText = ''
+
+function initVoiceInput() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!SR) {
+    recognitionSupported.value = false
+    micTooltip.value = '当前浏览器不支持语音输入，请用 Chrome 或 Edge'
+    return
+  }
+  recognitionSupported.value = true
+  recognition = new SR()
+  recognition.lang = 'zh-CN'
+  recognition.continuous = true
+  recognition.interimResults = true
+  recognition.maxAlternatives = 1
+
+  recognition.onstart = () => {
+    listening.value = true
+    micTooltip.value = '正在聆听…点一下结束'
+  }
+
+  recognition.onresult = (event) => {
+    let finalText = ''
+    let interimText = ''
+    for (let i = 0; i < event.results.length; i++) {
+      const result = event.results[i]
+      const transcript = result[0] && result[0].transcript ? result[0].transcript : ''
+      if (result.isFinal) finalText += transcript
+      else interimText += transcript
+    }
+    inputText.value = voiceBaseText + finalText + interimText
+  }
+
+  recognition.onerror = (event) => {
+    listening.value = false
+    micTooltip.value = '语音输入'
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      ElMessage.warning('麦克风权限被拒绝，请在浏览器地址栏允许麦克风')
+    } else if (event.error === 'no-speech') {
+      ElMessage.info('没有听到声音，请再试一次')
+    } else if (event.error === 'network') {
+      ElMessage.warning('语音识别服务连接失败，请检查网络或改用键盘输入')
+    }
+  }
+
+  recognition.onend = () => {
+    listening.value = false
+    micTooltip.value = '语音输入'
+  }
+}
+
+function toggleVoiceInput() {
+  if (!recognition) return
+  if (listening.value) {
+    recognition.stop()
+    return
+  }
+  voiceBaseText = inputText.value
+  try {
+    recognition.start()
+  } catch (e) {
+    // 连续点击时 start 可能抛 InvalidStateError，忽略即可
+    console.warn('语音识别启动失败', e)
+  }
+}
+
+function stopVoiceInput() {
+  if (recognition && listening.value) {
+    recognition.stop()
+  }
+}
 
 function scrollToBottom() {
   nextTick(() => {
@@ -171,15 +316,102 @@ function scrollToBottom() {
 // 初始化时拉模型列表
 onMounted(() => {
   aiStore.loadModels()
+  initVoiceInput()
 })
+
+function triggerPickImage() {
+  if (aiStore.loading) return
+  if (pendingImages.value.length >= 3) {
+    ElMessage.warning('最多上传 3 张图片')
+    return
+  }
+  fileInputRef.value && fileInputRef.value.click()
+}
+
+function removeImage(idx) {
+  pendingImages.value.splice(idx, 1)
+}
+
+/**
+ * 读取图片并压缩为 dataURL：最长边 1000px、JPEG 0.8
+ * 目的：控制请求体大小（base64 会膨胀约 33%），避免 SSE 传输过慢
+ */
+function fileToCompressedDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.onload = () => {
+      const img = new Image()
+      img.onerror = () => reject(new Error('图片解析失败'))
+      img.onload = () => {
+        const max = 1000
+        let { width, height } = img
+        if (width > max || height > max) {
+          const scale = Math.min(max / width, max / height)
+          width = Math.round(width * scale)
+          height = Math.round(height * scale)
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0, width, height)
+        resolve(canvas.toDataURL('image/jpeg', 0.8))
+      }
+      img.src = reader.result
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+async function onFileChange(e) {
+  const files = Array.from(e.target.files || [])
+  e.target.value = ''
+  for (const file of files) {
+    if (pendingImages.value.length >= 3) break
+    if (!file.type.startsWith('image/')) {
+      ElMessage.warning('只能上传图片文件')
+      continue
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      ElMessage.warning('图片不能超过 10MB')
+      continue
+    }
+    try {
+      const dataUrl = await fileToCompressedDataUrl(file)
+      pendingImages.value.push(dataUrl)
+    } catch (err) {
+      ElMessage.error(err.message || '图片处理失败')
+    }
+  }
+}
 
 async function sendMessage() {
   const text = inputText.value.trim()
-  if (!text || aiStore.loading) return
+  const images = pendingImages.value.slice()
+  if ((!text && !images.length) || aiStore.loading) return
+  stopVoiceInput() // 发送时停止收音，避免识别结果持续覆盖输入框
   inputText.value = ''
-  await aiStore.sendMessage(text)
+  pendingImages.value = []
+  await aiStore.sendMessage(text, images)
   scrollToBottom()
 }
+
+// 用户点击按钮（用户手势）才打开支付宝沙箱，避免新窗口被浏览器拦截
+async function handleOpenPay() {
+  if (payOpening.value) return
+  payOpening.value = true
+  try {
+    await aiStore.openPendingPay()
+  } finally {
+    payOpening.value = false
+  }
+}
+
+// 离开页面时释放麦克风
+onBeforeUnmount(() => {
+  stopVoiceInput()
+})
 
 function renderContent(content) {
   if (!content) return ''
@@ -488,11 +720,42 @@ watch(() => aiStore.messages.length, scrollToBottom)
   30% { transform: translateY(-6px); opacity: 1; }
 }
 
+/* ===== AI 支付：待支付提示条（点击后打开支付宝沙箱） ===== */
+.pay-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 24px 12px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(254, 243, 199, 0.9), rgba(253, 230, 138, 0.6));
+  border: 1px solid #fbbf24;
+}
+.pay-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #92400e;
+}
+.pay-amount {
+  color: #dc2626;
+  font-size: 15px;
+}
+.pay-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .chat-input-bar {
   padding: 16px 24px 20px;
   background: #fff;
   border-top: 1px solid #e2e8f0;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: flex-end;
 }
@@ -501,8 +764,66 @@ watch(() => aiStore.messages.length, scrollToBottom)
   border-radius: 10px;
   border-color: #cbd5e1;
 }
+.chat-input-bar :deep(.el-textarea) {
+  flex: 1;
+}
 .input-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+/* ===== 多模态：消息气泡里的图片 ===== */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 8px;
+}
+.msg-image {
+  width: 110px;
+  height: 110px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  cursor: zoom-in;
+}
+
+/* ===== 多模态：输入区待发送图片预览 ===== */
+.pending-images {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.pending-item {
+  position: relative;
+}
+.pending-image {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+.pending-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ===== 语音输入：正在收音时的呼吸效果 ===== */
+.mic-active {
+  color: #ef4444 !important;
+  animation: mic-pulse 1.1s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 1; }
 }
 </style>

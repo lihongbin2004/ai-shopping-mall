@@ -11,10 +11,94 @@ import {
   getModels
 } from '@/api/ai'
 import { useCartStore } from '@/stores/cart'
+import { createAlipayPay, queryPayStatus } from '@/api/order'
 
 const WELCOME_MSG = {
   role: 'assistant',
   content: '您好！我是AI购物助手，可以帮您推荐商品、解答疑问、分析需求。请问有什么可以帮您的吗？'
+}
+
+// 支付宝沙箱：把后端返回的支付表单提交到新窗口（与订单详情页一致的流程）
+async function openAlipaySandbox(orderId, onPaid) {
+  // 必须先同步开窗口：await 之后用户手势已失效，target=_blank 提交会被浏览器拦截
+  let win = null
+  try {
+    win = window.open('about:blank', '_blank')
+  } catch (e) {
+    win = null
+  }
+  try {
+    const res = await createAlipayPay(orderId)
+    const form = res.data?.form
+    if (!form) throw new Error('支付表单生成失败')
+    const wrapper = document.createElement('div')
+    wrapper.innerHTML = form
+    const formEl = wrapper.querySelector('form')
+    if (!formEl) throw new Error('支付表单解析失败')
+
+    if (win && !win.closed) {
+      // 在刚打开的空白窗口里写入并提交沙箱表单
+      win.document.open()
+      win.document.write(formEl.outerHTML)
+      win.document.close()
+      const f = win.document.querySelector('form')
+      if (!f) throw new Error('支付表单写入失败')
+      f.submit()
+    } else {
+      // 弹窗被拦截时的兜底：表单写进当前页面并提交到新窗口
+      formEl.setAttribute('target', '_blank')
+      wrapper.style.position = 'fixed'
+      wrapper.style.left = '-9999px'
+      wrapper.style.top = '0'
+      document.body.appendChild(wrapper)
+      formEl.submit()
+      setTimeout(() => { try { document.body.removeChild(wrapper) } catch (e) {} }, 1000)
+      ElMessage({
+        type: 'warning',
+        message: '浏览器拦截了新窗口，请允许本站弹窗后重试',
+        duration: 6000,
+        showClose: true
+      })
+      return false
+    }
+    ElMessage({
+      type: 'success',
+      message: '已在新窗口打开支付宝沙箱，请在新窗口完成支付',
+      duration: 5000,
+      showClose: true
+    })
+    pollAlipayStatus(orderId, onPaid)
+    return true
+  } catch (e) {
+    if (win && !win.closed) {
+      try { win.close() } catch (err) { /* ignore */ }
+    }
+    // 沙箱网关不稳定时给出去订单详情页的兜底路径
+    ElMessage({
+      type: 'warning',
+      message: '支付宝沙箱暂时不可用，请到「我的订单 → 订单详情」重试或使用模拟支付',
+      duration: 6000,
+      showClose: true
+    })
+    return false
+  }
+}
+
+// 支付完成后主动查询几次，同步订单状态（沙箱 notify 到不了本地）
+function pollAlipayStatus(orderId, onPaid) {
+  let tries = 0
+  const timer = setInterval(async () => {
+    tries += 1
+    try {
+      const res = await queryPayStatus(orderId)
+      if (res.data?.paid) {
+        clearInterval(timer)
+        ElMessage.success('支付成功，订单已更新')
+        if (onPaid) onPaid()
+      }
+    } catch (e) { /* 忽略查询失败，继续等 */ }
+    if (tries >= 20) clearInterval(timer)
+  }, 3000)
 }
 
 export const useAiStore = defineStore('ai', () => {
@@ -24,6 +108,8 @@ export const useAiStore = defineStore('ai', () => {
   const sessions = ref([]) // 历史会话列表
   const models = ref([]) // 可用模型列表
   const currentModel = ref('auto') // 当前选中的模型，auto=按降级链
+  // AI 确认支付后待付款的订单，用于在聊天页渲染"去支付宝沙箱支付"按钮
+  const pendingPay = ref(null)
   let abortController = null
 
   function addMessage(msg) {
@@ -46,11 +132,12 @@ export const useAiStore = defineStore('ai', () => {
     messages.value = [{ ...WELCOME_MSG }]
   }
 
-  async function sendMessage(content) {
+  async function sendMessage(content, images) {
     if (loading.value) return
     loading.value = true
 
-    addMessage({ role: 'user', content })
+    // 多模态：用户消息带上图片，气泡里展示缩略图
+    addMessage({ role: 'user', content, images: images && images.length ? images : undefined })
     addMessage({ role: 'assistant', content: '' })
 
     const cartStore = useCartStore()
@@ -96,26 +183,43 @@ export const useAiStore = defineStore('ai', () => {
           },
           (toolData) => {
             const tools = toolData.tools || []
+            // 本地规则引擎的回复正文已经带了工具执行结果，只需要做副作用刷新
+            const alreadyInReply = !!toolData.local
+            const last = messages.value[messages.value.length - 1]
             for (const t of tools) {
-              const last = messages.value[messages.value.length - 1]
-              if (!last) continue
-              if (t.ok) {
-                if (['addCart', 'clearCart'].includes(t.tool)) {
-                  cartStore.fetchCartList().catch(() => {})
+              if (!last) break
+              // 自动化购物流程：下单/支付完成后同步刷新购物车（下单会清空已下单的商品）
+              if (t.ok && ['addCart', 'clearCart', 'createOrder', 'payOrder'].includes(t.tool)) {
+                cartStore.fetchCartList().catch(() => {})
+              }
+              if (t.ok && t.tool === 'createOrder') {
+                ElMessage.success(`下单成功，订单号 ${t.orderNo || ''}`)
+              }
+              if (t.ok && t.tool === 'payOrder' && t.needPay && t.orderId) {
+                // 二次确认后：记录待支付订单，由用户点击按钮再打开沙箱收银台
+                // （自动提交表单可能被浏览器拦截，必须依赖用户手势）
+                pendingPay.value = {
+                  orderId: t.orderId,
+                  orderNo: t.orderNo || '',
+                  totalAmount: t.totalAmount
                 }
-                if (t.displayText) {
-                  last.content += t.displayText
-                } else if (t.message) {
-                  last.content += `\n\n✅ ${t.message}`
-                } else {
-                  last.content += `\n\n✅ 操作完成`
-                }
-              } else {
-                last.content += `\n\n❌ ${t.message || '操作失败'}`
+              }
+              if (t.ok && t.tool === 'payOrder' && !t.needPay) {
+                ElMessage.success('支付成功，商家将尽快发货')
+              }
+              // needConfirm = 等待用户二次确认（如支付），不属于失败，不要显示 ❌
+              const text = t.needConfirm
+                ? (t.displayText || '')
+                : (t.ok
+                  ? (t.displayText || (t.message ? `\n\n✅ ${t.message}` : '\n\n✅ 操作完成'))
+                  : `\n\n❌ ${t.message || '操作失败'}`)
+              if (!alreadyInReply && text && !last.content.includes(text.trim())) {
+                last.content += text
               }
             }
           },
-          currentModel.value
+          currentModel.value,
+          images
         )
       } catch (err) {
         loading.value = false
@@ -130,6 +234,19 @@ export const useAiStore = defineStore('ai', () => {
       abortController = null
       loading.value = false
     }
+  }
+
+  // 用户点击"去支付宝沙箱支付"：必须是用户手势内调用，否则新窗口会被拦截
+  async function openPendingPay() {
+    const pay = pendingPay.value
+    if (!pay || !pay.orderId) return false
+    return openAlipaySandbox(pay.orderId, () => {
+      pendingPay.value = null
+    })
+  }
+
+  function dismissPendingPay() {
+    pendingPay.value = null
   }
 
   // 加载当前用户所有会话
@@ -227,8 +344,11 @@ export const useAiStore = defineStore('ai', () => {
     currentSessionId,
     models,
     currentModel,
+    pendingPay,
     sendMessage,
     stopGeneration,
+    openPendingPay,
+    dismissPendingPay,
     loadSessions,
     loadModels,
     createNewSession,

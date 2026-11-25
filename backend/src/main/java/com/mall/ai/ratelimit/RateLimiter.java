@@ -23,7 +23,7 @@ import java.util.UUID;
 @Component
 public class RateLimiter {
 
-    @Autowired
+    @Autowired(required = false)
     private StringRedisTemplate redis;
 
     /**
@@ -34,6 +34,7 @@ public class RateLimiter {
      * @return true 放行，false 限流
      */
     public boolean tryAcquire(String key, long windowMs, int maxCount) {
+        if (redis == null) return true;
         long now = System.currentTimeMillis();
         long windowStart = now - windowMs;
         String member = now + ":" + UUID.randomUUID();
@@ -57,6 +58,7 @@ public class RateLimiter {
      * 查询当前窗口内剩余可用次数（用于前端显示）
      */
     public long remaining(String key, long windowMs, int maxCount) {
+        if (redis == null) return maxCount;
         long now = System.currentTimeMillis();
         long windowStart = now - windowMs;
         ZSetOperations<String, String> zset = redis.opsForZSet();
@@ -70,6 +72,7 @@ public class RateLimiter {
      * 查询窗口内的所有请求时间戳（调试用）
      */
     public Set<String> recentMembers(String key) {
+        if (redis == null) return java.util.Collections.emptySet();
         return redis.opsForZSet().range(key, 0, -1);
     }
 }

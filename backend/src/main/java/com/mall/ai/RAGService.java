@@ -14,9 +14,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * RAG 知识库服务
@@ -225,16 +228,43 @@ public class RAGService {
         sb.append("- 每个请求最多调用一次工具\n");
         sb.append("- 调用前先用一两句话告知用户你将执行的操作\n");
         sb.append("- 商品名尽量简洁，用商城里的真实商品名称（参考上面的商品清单）\n");
-        sb.append("- 如果用户没说明数量，默认为1\n\n");
+        sb.append("- 如果用户没说明数量，默认为1\n");
+        sb.append("- 【重要·下单需明确指令】只有用户**明确要求下单/购买**（如\"帮我下单\"、\"买一个XX\"、\"把购物车结算\"）时才调用 createOrder；\n");
+        sb.append("  用户只是\"想看看/推荐/多少钱\"时**绝不**调用 createOrder，避免误下单。\n");
+        sb.append("- 下单使用用户默认收货地址；用户没有收货地址时如实提示，不要让用户重复提供。\n");
+        sb.append("- 【资金安全】支付前必须先向用户复述订单号和金额，并等待用户明确回复\"确认支付\"，绝不能未经确认直接扣款。\n\n");
+
+        sb.append("6. 【下单工具 createOrder】\n");
+        sb.append("   当用户说\"帮我下单/把购物车里的东西下单/结算/买一个XX\"时使用。\n");
+        sb.append("   参数：\n");
+        sb.append("   - productName: 商品名；传\"购物车\"表示把购物车里的全部商品一起下单\n");
+        sb.append("   - quantity: 数量(默认1)\n");
+        sb.append("   输出格式：\n");
+        sb.append("   [[TOOL:createOrder]]{\"productName\":\"购物车\",\"quantity\":1}[[/TOOL]]\n");
+        sb.append("   或直接买某件商品：\n");
+        sb.append("   [[TOOL:createOrder]]{\"productName\":\"iPhone 15 Pro Max\",\"quantity\":1}[[/TOOL]]\n\n");
+
+        sb.append("7. 【查询我的订单 getOrders】\n");
+        sb.append("   当用户问\"我的订单/查一下订单/订单到哪了/买过什么\"时使用，能直接拿到该用户真实订单号和状态。\n");
+        sb.append("   参数：status 可选（0待付款 1待发货 2待收货 3已完成 4已取消 5已退款），不传表示全部。\n");
+        sb.append("   [[TOOL:getOrders]]{}[[/TOOL]]\n\n");
+
+        sb.append("8. 【支付订单 payOrder】\n");
+        sb.append("   商城走的是支付宝沙箱支付，AI 不能直接把订单标记为已付款，必须二次确认后打开沙箱收银台：\n");
+        sb.append("   ① 用户第一次说\"帮我支付订单/付款/去支付\"时，先调用不带 confirm 的 payOrder，拿到订单号和金额，告知用户并要求回复\"确认支付\"；\n");
+        sb.append("   ② 用户明确回复\"确认支付/确认\"后，调用带 confirm 的 payOrder，前端会打开支付宝沙箱收银台；此时**不要**说\"支付成功\"，应提示用户在新窗口完成付款。\n");
+        sb.append("   第一步：[[TOOL:payOrder]]{}[[/TOOL]]\n");
+        sb.append("   第二步（用户确认后）：[[TOOL:payOrder]]{\"confirm\":\"true\"}[[/TOOL]]\n\n");
 
         sb.append("【回答原则】\n");
         sb.append("- 价格、库存、是否在售等问题：你已经看到上面【商城实时商品清单】，可以直接根据清单回答，不需要调用工具。\n");
         sb.append("- 用户说\"我有X元/预算X元/不超过X元想买XX\"：用 searchProduct 工具，传入 maxPrice 参数。\n");
         sb.append("- 用户说\"推荐/搜索/想要\"某类商品：参考清单判断，必要时用 searchProduct 工具。\n");
-        sb.append("- 退货、订单、优惠券等问题：参考上面的售后规则直接回答。\n");
+        sb.append("- 退货、优惠券等规则问题：参考上面的售后规则直接回答；用户问\"我的订单/订单到哪了\"时必须调用 getOrders 工具查真实订单。\n");
         sb.append("- 答案要自然、口语化，像 DeepSeek 一样直接回答，不要过度调用工具。\n");
         sb.append("- 【重要·不要编造商品】本店的商品以上面【商城实时商品清单】为准，**严格依据清单回答**，不要凭印象发挥价格、名称或库存。\n");
-        sb.append("- 【重要·无货要说没货】当用户要找的商品在清单里**找不到对应商品或对应分类**时，必须直接说\"抱歉，本店暂时没有您要的这类型商品\"，然后**用 searchProduct 工具（不传 keyword 或 keyword=\"\"）拉取商城热销商品**，从中挑选几款推荐给用户，**绝不能编造或乱推荐不相关商品**。\n\n");
+        sb.append("- 【重要·先理解语义需求】用户用「喜好/场景/用途」描述需求时（如\"我喜欢打手游\"、\"我常出差办公\"、\"想送女朋友礼物\"），**不要**把它当成商品名去核对，也**不要**回复\"没有【XX】这类商品\"；应先理解真实意图（打手游 → 性能好的手机/平板；出差 → 轻薄本/降噪耳机），再从【商城实时商品清单】里挑 2-3 款最匹配的商品，并说明推荐理由。\n");
+        sb.append("- 【重要·无货要说没货】只有当用户明确要一个清单里确实没有的具体商品（如\"我要买 iPhone 15 Pro\"）时，才说\"抱歉，本店暂时没有这款商品\"，随后给出相近替代品；**绝不能编造商品**。\n\n");
 
         sb.append("请以友好、热情、专业的语气回答用户的问题。如果遇到无法回答的问题，请引导用户联系人工客服。\n\n");
 
@@ -294,95 +324,138 @@ public class RAGService {
     }
 
     /**
-     * RAG 知识问答（无需 LLM）：根据关键词匹配知识库，给出自然答案
-     * 适合 LocalAiEngine 兜底用
+     * 多模态（识图）场景追加到 system prompt 的规则
+     */
+    public String getVisionGuidance() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n\n【多模态识图规则】\n");
+        sb.append("- 用户本轮上传了商品图片，请先仔细观察：识别商品品类、品牌/型号（若可辨）、关键外观特征、可能的用途。\n");
+        sb.append("- 再从【商城实时商品清单】里找出最相近的 2-3 款商品推荐，并说明\"为什么相近\"（同品类/功能接近/价格带接近）。\n");
+        sb.append("- 若图片不是商品（文字截图、风景、人脸等），先如实说明你看到了什么，再引导用户描述想买的商品，不要硬推无关商品。\n");
+        sb.append("- 若商城完全没有同类商品，如实说\"本店暂时没有同类商品\"，并推荐最接近的替代品类。\n");
+        sb.append("- 严禁编造清单里不存在的商品、价格和参数。\n");
+        return sb.toString();
+    }
+
+    /**
+     * RAG 知识问答（无 LLM 时的兜底）
+     * 真检索：从 knowledge_section 表按"问题 ↔ 条目"的字符二元组重合度召回最相关的内容，
+     * 只把命中的条目原文返回。检索不到足够相关内容时返回空串，交给上层大模型处理——绝不编造答案。
      */
     public String answerFromKnowledge(String userMessage) {
-        if (userMessage == null) return "";
-        String m = userMessage.trim();
-        StringBuilder sb = new StringBuilder();
+        if (userMessage == null || userMessage.trim().isEmpty()) return "";
+        Set<String> q = bigrams(userMessage);
+        if (q.isEmpty()) return "";
 
-        // 退换货 / 退款
-        if (m.contains("退款") || m.contains("退货") || m.contains("退换") || m.contains("售后")) {
-            sb.append("退换货这块给您说下👇\n\n");
-            sb.append("• 商品签收后 **7 天内**有质量问题可申请退货退款。\n");
-            sb.append("• 未发货订单随时取消；已发货订单联系客服处理。\n");
-            sb.append("• 退款会在审核通过后 **3～7 个工作日**原路返回。\n");
-            sb.append("• 申请路径：我的订单 → 申请退款 → 填写原因 → 等待审核。\n");
-            return sb.toString();
+        List<KnowledgeSection> sections;
+        try {
+            sections = knowledgeSectionService.listEnabled();
+        } catch (Exception e) {
+            return "";
         }
-        // 发票
-        if (m.contains("发票")) {
-            sb.append("开发票的相关说明：\n\n");
-            sb.append("• 在订单详情页可以申请开具电子发票或纸质发票。\n");
-            sb.append("• 发票抬头需与收货人信息一致；发票内容默认为商品明细。\n");
-            sb.append("• 电子发票会发送到您预留的邮箱；纸质发票随商品一起寄出。\n");
-            return sb.toString();
+        if (sections == null || sections.isEmpty()) return "";
+
+        String bestSection = null;
+        List<String> bestItems = new ArrayList<>();
+        int bestScore = 0;
+
+        for (KnowledgeSection s : sections) {
+            if (s == null || s.getContent() == null) continue;
+            // 工具说明段是给 LLM 的 prompt，不是给用户看的答案
+            if ("AI 助手具备的工具".equals(s.getName())) continue;
+            String text = s.getContent().trim();
+            if (text.isEmpty()) continue;
+
+            List<String> items = splitItems(text);
+            List<String> hits = new ArrayList<>();
+            int total = 0;
+            for (String it : items) {
+                int sc = overlapScore(q, it);
+                if (sc >= 2) hits.add(it);          // 至少命中 2 个二元组才算相关条目
+            }
+            // 段落标题命中额外加权（用户问"售后"，段落名就叫"售后规则"）
+            total += overlapScore(q, s.getName()) * 2;
+            total += hits.size() * 3;
+
+            if (total > bestScore) {
+                bestScore = total;
+                bestSection = s.getName();
+                bestItems = hits.isEmpty()
+                        ? items.subList(0, Math.min(3, items.size()))  // 整段相关，取前 3 条
+                        : hits;
+            }
         }
-        // 运费 / 邮费
-        if (m.contains("运费") || m.contains("邮费") || m.contains("包邮")) {
-            sb.append("运费政策：\n\n");
-            sb.append("• 单笔订单满 **99 元包邮**，不足部分按实际重量/距离计算。\n");
-            sb.append("• 部分商品支持\"免运费\"标签，活动期内全场包邮。\n");
-            sb.append("• 下单页可实时查看具体运费金额。\n");
-            return sb.toString();
+
+        // 置信度不足 → 返回空，让大模型结合完整知识库回答，避免硬凑答案
+        if (bestScore < 3 || bestSection == null) return "";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("关于【").append(bestSection).append("】这块给您说下👇\n\n");
+        for (String it : bestItems) {
+            sb.append("• ").append(it).append("\n");
         }
-        // 支付方式
-        if (m.contains("支付") || m.contains("微信") || m.contains("支付宝")) {
-            sb.append("支付方式很灵活👇\n\n");
-            sb.append("• 微信支付、支付宝、银行卡、余额等都能用。\n");
-            sb.append("• 大额订单还可以选择分期支付。\n");
-            sb.append("• 支付遇到问题可以联系在线客服～\n");
-            return sb.toString();
+        return sb.toString();
+    }
+
+    /** 无意义/疑问类二元组，检索时直接丢掉，避免"怎么/什么"之类噪声把无关段落召回 */
+    private static final Set<String> RAG_STOP_BIGRAMS = new HashSet<>(Arrays.asList(
+            "怎么", "什么", "如何", "哪些", "可以", "能否", "请问", "我的", "你们", "我们",
+            "这个", "那个", "一下", "时候", "多久", "问题", "是否", "需要", "告诉", "帮我",
+            "我想", "我要", "有没", "没有", "能不", "是不"));
+
+    /** 归一化：只保留中文/字母/数字并转小写，消除空格标点干扰 */
+    private String normalize(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toLowerCase().toCharArray()) {
+            if (Character.isLetterOrDigit(c)) sb.append(c);
         }
-        // 会员 / 积分
-        if (m.contains("会员") || m.contains("vip") || m.contains("积分")) {
-            sb.append("会员和积分体系：\n\n");
-            sb.append("• 消费 1 元积 1 分，积分可以在下次下单时抵现。\n");
-            sb.append("• 不同等级的会员享受不同的折扣和专属活动。\n");
-            sb.append("• 升级 VIP 后有生日礼包、专属客服等福利。\n");
-            return sb.toString();
+        return sb.toString();
+    }
+
+    /** 字符二元组集合，用于中文短文本的轻量相似度计算 */
+    private Set<String> bigrams(String s) {
+        String n = normalize(s);
+        Set<String> set = new HashSet<>();
+        for (int i = 0; i + 1 < n.length(); i++) {
+            String bg = n.substring(i, i + 2);
+            if (RAG_STOP_BIGRAMS.contains(bg)) continue;
+            if (Character.isDigit(bg.charAt(0)) && Character.isDigit(bg.charAt(1))) continue;
+            set.add(bg);
         }
-        // 注册 / 忘记密码
-        if (m.contains("注册") || m.contains("忘记密码") || m.contains("密码")) {
-            sb.append("账号相关：\n\n");
-            sb.append("• 注册：在登录页点击\"立即注册\"，手机号或邮箱即可。\n");
-            sb.append("• 忘记密码：登录页点\"忘记密码\"，通过手机号/邮箱验证重置。\n");
-            sb.append("• 修改密码：我的 → 账号安全 → 修改密码。\n");
-            return sb.toString();
+        return set;
+    }
+
+    /** 问题二元组在某一文本条目里的命中个数 */
+    private int overlapScore(Set<String> q, String item) {
+        if (q == null || q.isEmpty() || item == null || item.isEmpty()) return 0;
+        String n = normalize(item);
+        int hit = 0;
+        for (String bg : q) {
+            if (n.contains(bg)) hit++;
         }
-        // 联系客服
-        if (m.contains("联系") || m.contains("客服电话") || m.contains("工作时间")) {
-            sb.append("联系我们：\n\n");
-            sb.append("• 在线客服：当前页面 7×24 小时为您服务～\n");
-            sb.append("• 客服电话：400-888-8888（工作日 9:00-18:00）\n");
-            sb.append("• 邮箱：support@ai-mall.example.com\n");
-            return sb.toString();
+        return hit;
+    }
+
+    /** 段落内容拆条目：JSON 数组逐条拆，纯文本按换行/分号拆 */
+    private List<String> splitItems(String content) {
+        List<String> items = new ArrayList<>();
+        if (content == null) return items;
+        String t = content.trim();
+        if (t.startsWith("[")) {
+            try {
+                List<String> arr = MAPPER.readValue(t, new TypeReference<List<String>>() {});
+                for (String s : arr) {
+                    if (s != null && !s.trim().isEmpty()) items.add(s.trim());
+                }
+                if (!items.isEmpty()) return items;
+            } catch (Exception ignored) {}
         }
-        // 尺码 / 颜色
-        if (m.contains("尺码") || m.contains("颜色") || m.contains("规格")) {
-            sb.append("商品规格：\n\n");
-            sb.append("• 进入商品详情页可查看尺码表、颜色选项。\n");
-            sb.append("• 不确定时建议先咨询客服，或者看看其他买家的晒图～\n");
-            return sb.toString();
+        for (String line : t.split("[\\n；;]")) {
+            if (line != null && !line.trim().isEmpty()) items.add(line.trim());
         }
-        // 保修 / 维修
-        if (m.contains("保修") || m.contains("维修") || m.contains("坏了")) {
-            sb.append("保修和维修：\n\n");
-            sb.append("• 电子产品一般享受 1 年全国联保。\n");
-            sb.append("• 凭订单号/发票即可在售后网点办理。\n");
-            sb.append("• 人为损坏不在保修范围内哦～\n");
-            return sb.toString();
-        }
-        // 真假 / 正品
-        if (m.contains("真假") || m.contains("正品")) {
-            sb.append("正品保证：\n\n");
-            sb.append("• 商城所有商品均为正品，假一赔十。\n");
-            sb.append("• 支持专柜验货，开具正规发票。\n");
-            sb.append("• 7 天无理由退换，让您购物无忧～\n");
-            return sb.toString();
-        }
-        return "";
+        if (items.isEmpty()) items.add(t);
+        return items;
     }
 
     /**

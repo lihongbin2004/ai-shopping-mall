@@ -71,10 +71,12 @@ public class AiController {
         String message = (String) params.get("message");
         Long sessionId = params.get("sessionId") == null ? null : Long.valueOf(params.get("sessionId").toString());
         String model = params.get("model") == null ? "auto" : String.valueOf(params.get("model")); // 多模型集成：模型选择
+        List<String> images = parseImages(params.get("images")); // 多模态：用户上传的图片
 
-        if (message == null || message.trim().isEmpty()) {
+        if ((message == null || message.trim().isEmpty()) && images.isEmpty()) {
             return R.error("消息不能为空");
         }
+        if (message == null || message.trim().isEmpty()) message = "请看看这张图片，告诉我它是什么商品";
 
         // 限流：每用户每分钟 30 次
         String key = rlKey(userId, request);
@@ -115,23 +117,26 @@ public class AiController {
             liteHistory.add(new LocalAiEngine.AiMessageLite(hm.getRole(), hm.getContent()));
         }
         try {
-            LocalAiEngine.LocalResult local = localAiEngine.process(message, userId, liteHistory);
-            if (local != null && local.tools != null && !local.tools.isEmpty()) {
-                String localReply = local.reply == null ? "" : local.reply;
-                aiMessageService.saveMessage(sessionId, "assistant", localReply);
-                Map<String, Object> localRes = new HashMap<>();
-                localRes.put("sessionId", sessionId);
-                localRes.put("reply", localReply);
-                localRes.put("provider", "local");
-                localRes.put("usedModel", "LocalAiEngine");
-                localRes.put("tools", local.tools);
-                return R.ok(localRes);
+            if (images.isEmpty()) { // 带图片的多模态请求不做本地预检，必须交给视觉模型
+                LocalAiEngine.LocalResult local = localAiEngine.process(message, userId, liteHistory);
+                if (local != null && local.tools != null && !local.tools.isEmpty()) {
+                    String localReply = local.reply == null ? "" : local.reply;
+                    aiMessageService.saveMessage(sessionId, "assistant", localReply);
+                    Map<String, Object> localRes = new HashMap<>();
+                    localRes.put("sessionId", sessionId);
+                    localRes.put("reply", localReply);
+                    localRes.put("provider", "local");
+                    localRes.put("usedModel", "LocalAiEngine");
+                    localRes.put("tools", local.tools);
+                    return R.ok(localRes);
+                }
             }
         } catch (Exception e) {
             System.err.println("[AI] /chat LocalAiEngine 预检失败（继续走大模型）: " + e.getMessage());
         }
 
-        LlmRouter.Result llmRes = llmRouter.chat(model, systemPrompt, history, message);
+        if (!images.isEmpty()) systemPrompt += ragService.getVisionGuidance();
+        LlmRouter.Result llmRes = llmRouter.chat(model, systemPrompt, history, message, images);
         String reply = llmRes.content;
         aiMessageService.saveMessage(sessionId, "assistant", reply);
 
@@ -170,10 +175,11 @@ public class AiController {
         String message = (String) params.get("message");
         Long sessionId = params.get("sessionId") == null ? null : Long.valueOf(params.get("sessionId").toString());
         final String model = params.get("model") == null ? "auto" : String.valueOf(params.get("model")); // 多模型集成：模型选择
+        final List<String> images = parseImages(params.get("images")); // 多模态：用户上传的图片
 
         SseEmitter emitter = new SseEmitter(60000L);
 
-        if (message == null || message.trim().isEmpty()) {
+        if ((message == null || message.trim().isEmpty()) && images.isEmpty()) {
             try {
                 Map<String, Object> errData = new HashMap<>();
                 errData.put("error", "消息不能为空");
@@ -196,14 +202,18 @@ public class AiController {
             return emitter;
         }
 
+        // 只发图片不带文字时，补一句默认提问，保证有标题、能存库
+        final String userMessage = (message == null || message.trim().isEmpty())
+                ? "请看看这张图片，告诉我它是什么商品" : message;
+
         if (sessionId == null) {
-            String title = message.length() > 20 ? message.substring(0, 20) + "..." : message;
+            String title = userMessage.length() > 20 ? userMessage.substring(0, 20) + "..." : userMessage;
             AiSession session = aiSessionService.createSession(userId, title);
             sessionId = session.getId();
         }
 
         final Long finalSessionId = sessionId;
-        aiMessageService.saveMessage(finalSessionId, "user", message);
+        aiMessageService.saveMessage(finalSessionId, "user", userMessage);
 
         // 只取历史 assistant 消息，避免与当前 user 消息重复
         List<AiMessage> historyMessages = aiMessageService.getSessionMessages(finalSessionId);
@@ -226,13 +236,16 @@ public class AiController {
         final Long savedSessionId = finalSessionId;
         new Thread(() -> {
             // 优先尝试 LocalAiEngine 识别意图（DeepSeek 经常抽风/限流，本地规则更稳）
+            // 带图片的多模态请求不做本地预检，必须交给视觉模型
             try {
-                LocalAiEngine.LocalResult local = localAiEngine.process(message, userId, liteHistory);
-                if (local != null && local.tools != null && !local.tools.isEmpty()) {
-                    // 本地能识别意图 → 直接走本地，绕开大模型
-                    String content = local.reply == null ? "" : local.reply;
-                    streamLocalReply(emitter, content, finalSessionId, local.tools, aiMessageService, null);
-                    return;
+                if (images.isEmpty()) {
+                    LocalAiEngine.LocalResult local = localAiEngine.process(userMessage, userId, liteHistory);
+                    if (local != null && local.tools != null && !local.tools.isEmpty()) {
+                        // 本地能识别意图 → 直接走本地，绕开大模型
+                        String content = local.reply == null ? "" : local.reply;
+                        streamLocalReply(emitter, content, finalSessionId, local.tools, aiMessageService, null);
+                        return;
+                    }
                 }
             } catch (Exception e) {
                 System.err.println("[AI] LocalAiEngine 预检失败（继续走大模型）: " + e.getMessage());
@@ -246,9 +259,11 @@ public class AiController {
                         peeked2 == null ? null : peeked2[0],
                         peeked2 == null ? null : peeked2[1],
                         userId);
+                // 多模态：带上图片时追加识图规则
+                if (!images.isEmpty()) systemPrompt += ragService.getVisionGuidance();
 
                 final StringBuilder fullContent = new StringBuilder();
-                LlmRouter.Result llmRes = llmRouter.chatStream(model, systemPrompt, history, message, (delta) -> {
+                LlmRouter.Result llmRes = llmRouter.chatStream(model, systemPrompt, history, message, images, (delta) -> {
                     if (delta == null) return;
                     fullContent.append(delta);
                     Map<String, Object> data = new HashMap<>();
@@ -261,8 +276,8 @@ public class AiController {
                 if (llmRes.allFailed) {
                     System.err.println("[AI] 所有大模型均不可用，降级 LocalAiEngine");
                     try {
-                        LocalAiEngine.LocalResult local = localAiEngine.process(message, userId, liteHistory);
-                        streamLocalReply(emitter, local == null ? "" : local.reply, savedSessionId,
+                        LocalAiEngine.LocalResult local = localAiEngine.process(userMessage, userId, liteHistory);
+                        streamLocalReply(emitter, fallbackText(local), savedSessionId,
                                 local == null ? null : local.tools, aiMessageService, null);
                         return;
                     } catch (Exception fbEx) {
@@ -301,8 +316,8 @@ public class AiController {
             } catch (Exception e) {
                 System.err.println("[AI] 调用异常，降级到 LocalAiEngine: " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 try {
-                    LocalAiEngine.LocalResult local = localAiEngine.process(message, userId);
-                    streamLocalReply(emitter, local == null ? "" : local.reply, savedSessionId,
+                    LocalAiEngine.LocalResult local = localAiEngine.process(userMessage, userId);
+                    streamLocalReply(emitter, fallbackText(local), savedSessionId,
                             local == null ? null : local.tools, aiMessageService, null);
                     return;
                 } catch (Exception fallbackEx) {
@@ -363,6 +378,42 @@ public class AiController {
     }
 
     /**
+     * 解析前端传来的图片列表（data:image/xxx;base64,... 或公网 http 地址）
+     * 限制：最多 3 张，单张 base64 不超过 8MB，避免 SSE 传输过载
+     */
+    private List<String> parseImages(Object raw) {
+        List<String> images = new ArrayList<>();
+        if (!(raw instanceof List)) return images;
+        for (Object o : (List<?>) raw) {
+            if (o == null) continue;
+            String s = String.valueOf(o).trim();
+            if (s.isEmpty()) continue;
+            if (s.length() > 8 * 1024 * 1024) {
+                System.err.println("[AI] 图片过大已忽略，长度=" + s.length());
+                continue;
+            }
+            images.add(s);
+            if (images.size() >= 3) break;
+        }
+        return images;
+    }
+
+    /**
+     * 本地引擎返回 null（表示"我不确定，应交由大模型"）时的兜底话术。
+     * 不能返回空串，否则前端会卡在一个空白的"..."气泡上。
+     */
+    private String fallbackText(LocalAiEngine.LocalResult local) {
+        if (local != null && local.reply != null && !local.reply.trim().isEmpty()) {
+            return local.reply;
+        }
+        return "抱歉，我这边没能准确理解您的意思😊\n\n"
+                + "您可以换个说法告诉我：\n"
+                + "• 想买什么品类（比如手机、耳机、零食、图书）\n"
+                + "• 预算大概多少（比如 500 元以下）\n"
+                + "• 或者问售后、发货、优惠券这些规则～";
+    }
+
+    /**
      * 本地 AI 引擎降级时的"逐字慢推"流式输出。
      * 每次推 1 个字符 + 70ms 间隔，让前端能明显看到打字机效果。
      */
@@ -389,6 +440,9 @@ public class AiController {
             if (tools != null && !tools.isEmpty()) {
                 Map<String, Object> toolData = new HashMap<>();
                 toolData.put("tools", tools);
+                // 本地规则引擎的回复文案里已经包含了工具的执行结果，
+                // 前端只需要刷新购物车等副作用，不要再把 displayText 追加一遍
+                toolData.put("local", true);
                 emitter.send(SseEmitter.event().name("tool_result").data(toolData));
             }
             emitter.complete();

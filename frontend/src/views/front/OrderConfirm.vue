@@ -120,9 +120,14 @@
           <el-input v-model="addressForm.phone" placeholder="11位手机号" maxlength="11" />
         </el-form-item>
         <el-form-item label="所在地区">
-          <el-input v-model="addressForm.province" placeholder="省" style="width:30%;margin-right:3%" />
-          <el-input v-model="addressForm.city" placeholder="市" style="width:30%;margin-right:3%" />
-          <el-input v-model="addressForm.district" placeholder="区/县" style="width:30%" />
+          <el-cascader
+            v-model="addressCodes"
+            :options="regionData"
+            :props="{ checkStrictly: false, emitPath: true }"
+            placeholder="请选择省/市/区"
+            style="width: 100%"
+            @change="onAreaChange"
+          />
         </el-form-item>
         <el-form-item label="详细地址">
           <el-input v-model="addressForm.detail" type="textarea" :rows="2" placeholder="街道、楼栋、门牌号" />
@@ -151,6 +156,53 @@ import { useCartStore } from '@/stores/cart'
 import { createOrder } from '@/api/order'
 import { getAddressList, addAddress, updateAddress, deleteAddress, setDefaultAddress } from '@/api/address'
 import { getAvailableCoupons } from '@/api/coupon'
+import { regionData } from 'element-china-area-data'
+
+// ===== 省市区辅助工具（同 Profile.vue）=====
+function normalizeAreaName(name) {
+  if (!name) return ''
+  return String(name)
+    .replace(/(省|市|自治区|特别行政区|回族自治区|壮族自治区|维吾尔自治区|自治区)$/g, '')
+    .replace(/(市辖区|地区|盟|自治州)$/g, '')
+    .replace(/(区|县|市)$/g, '')
+    .trim()
+}
+function findRegionByName(list, name) {
+  const n = normalizeAreaName(name)
+  if (!n) return null
+  let found = list.find(item => normalizeAreaName(item.label) === n)
+  if (found) return found
+  found = list.find(item => normalizeAreaName(item.label).includes(n) || n.includes(normalizeAreaName(item.label)))
+  return found || null
+}
+function namesToCodes(province, city, district) {
+  if (!province) return []
+  const pItem = findRegionByName(regionData, province)
+  if (!pItem) return []
+  if (!city) return [pItem.value]
+  const cItem = findRegionByName(pItem.children || [], city)
+  if (!cItem) return [pItem.value]
+  if (!district) return [pItem.value, cItem.value]
+  const dItem = findRegionByName(cItem.children || [], district)
+  if (!dItem) return [pItem.value, cItem.value]
+  return [pItem.value, cItem.value, dItem.value]
+}
+function codesToNames(codes) {
+  if (!codes || codes.length === 0) return { province: '', city: '', district: '' }
+  const result = { province: '', city: '', district: '' }
+  let list = regionData
+  const labels = []
+  for (const code of codes) {
+    const item = list.find(x => x.value === code)
+    if (!item) break
+    labels.push(item.label)
+    list = item.children || []
+  }
+  if (labels[0]) result.province = labels[0]
+  if (labels[1]) result.city = labels[1]
+  if (labels[2]) result.district = labels[2]
+  return result
+}
 
 const router = useRouter()
 const cartStore = useCartStore()
@@ -166,6 +218,7 @@ const remark = ref('')
 const showAddressDialog = ref(false)
 const addressSaving = ref(false)
 const payment = ref('支付宝')
+const addressCodes = ref([]) // cascader 绑定的 code 数组
 
 const addressForm = reactive({
   id: null,
@@ -188,6 +241,7 @@ function resetAddressForm(addr) {
     addressForm.district = addr.district || ''
     addressForm.detail = addr.detail || ''
     addressForm.isDefault = addr.isDefault ?? 0
+    addressCodes.value = namesToCodes(addr.province, addr.city, addr.district)
   } else {
     addressForm.id = null
     addressForm.receiver = ''
@@ -197,7 +251,16 @@ function resetAddressForm(addr) {
     addressForm.district = ''
     addressForm.detail = ''
     addressForm.isDefault = addresses.value.length ? 0 : 1
+    addressCodes.value = []
   }
+}
+
+// cascader 选择变化 → 把 code 数组转成名称写回 form
+function onAreaChange(codes) {
+  const names = codesToNames(codes)
+  addressForm.province = names.province
+  addressForm.city = names.city
+  addressForm.district = names.district
 }
 
 async function saveAddress() {

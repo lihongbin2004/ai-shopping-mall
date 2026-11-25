@@ -31,9 +31,12 @@ public class AiToolService {
     @Autowired
     private FavoriteService favoriteService;
 
+    @Autowired
+    private AiOrderTool aiOrderTool;
+
     // 匹配 [[TOOL:addCart]]{"productName":"坚果礼盒","quantity":2}[[/TOOL]]
     private static final Pattern TOOL_PATTERN = Pattern.compile(
-            "\\[\\[TOOL:(addCart|searchProduct|clearCart|getFavorites|addFavoritesToCart)[^\\]]*\\]\\]([\\s\\S]*?)\\[\\[/TOOL\\]\\]"
+            "\\[\\[TOOL:(addCart|searchProduct|clearCart|getFavorites|addFavoritesToCart|createOrder|getOrders|payOrder)[^\\]]*\\]\\]([\\s\\S]*?)\\[\\[/TOOL\\]\\]"
     );
 
     /**
@@ -74,6 +77,32 @@ public class AiToolService {
                     case "addFavoritesToCart":
                         result.putAll(doAddFavoritesToCart(params, userId));
                         break;
+                    case "createOrder":
+                        result.putAll(aiOrderTool.createOrder(userId, params.getString("productName"), params.getInteger("quantity")));
+                        break;
+                    case "getOrders":
+                        result.putAll(aiOrderTool.listOrders(userId, params.getInteger("status"), 5));
+                        break;
+                    case "payOrder": {
+                        // 资金操作必须二次确认：大模型只有在用户明确回复"确认"后才允许带 confirm:true
+                        boolean confirmed = Boolean.TRUE.equals(params.getBoolean("confirm"));
+                        if (confirmed) {
+                            // 二次确认后只返回支付宝沙箱支付入口，前端负责打开收银台
+                            result.putAll(aiOrderTool.createPayEntry(userId, params.getString("orderNo")));
+                        } else {
+                            Map<String, Object> payable = aiOrderTool.findPayableOrder(userId, params.getString("orderNo"));
+                            if (Boolean.TRUE.equals(payable.get("ok"))) {
+                                payable.put("ok", false);
+                                payable.put("needConfirm", true);
+                                payable.put("message", "等待用户确认支付");
+                                payable.put("displayText", "\n\n💳 待确认支付\n• 订单号：**" + payable.get("orderNo")
+                                        + "**\n• 支付金额：¥" + payable.get("totalAmount")
+                                        + "\n\n支付属于资金操作，请回复\"确认支付\"，我再执行。");
+                            }
+                            result.putAll(payable);
+                        }
+                        break;
+                    }
                     default:
                         result.put("ok", false);
                         result.put("message", "未知工具: " + toolName);
@@ -300,9 +329,9 @@ public class AiToolService {
             if (addAll) {
                 targets.addAll(favs);
             } else {
-                String needle = productName.toLowerCase();
+                String needle = productName.trim();
                 for (Favorite f : favs) {
-                    if (f.getName() != null && f.getName().toLowerCase().contains(needle)) {
+                    if (AiTextUtil.sameProduct(f.getName(), needle)) {
                         targets.add(f);
                     }
                 }
